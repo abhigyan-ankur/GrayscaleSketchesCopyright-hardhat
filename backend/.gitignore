@@ -1,0 +1,7 @@
+.env
+registry/descriptors/
+registry/registry.json
+__pycache__/
+*.pyc
+*.pkl
+

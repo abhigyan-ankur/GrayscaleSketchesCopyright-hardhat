@@ -1,0 +1,22 @@
+{
+  "name": "part3-contracts",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-ethers": "^4.0.15",
+    "@nomicfoundation/hardhat-toolbox": "^7.0.0",
+    "@types/node": "^22.20.1",
+    "dotenv": "^17.4.2",
+    "ethers": "^6.17.0",
+    "hardhat": "^3.11.1",
+    "typescript": "~6.0.3"
+  },
+  "type": "module"
+}
