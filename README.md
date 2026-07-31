@@ -1,7 +1,6 @@
 # Blockchain-Based Digital Artwork Copyright Protection System
 
-Capstone project — BIT, Department of AI & ML (2025-26)
-Guided by Dr. Shruthiba A
+
 
 ## Project Structure
 
