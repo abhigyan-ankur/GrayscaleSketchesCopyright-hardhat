@@ -25,8 +25,8 @@ def process_upload(
     author: str,
     use_ipfs: bool = True,
     use_blockchain: bool = True,
+    check_only: bool = False,
 ) -> dict:
-
     # ── Step 1: Validate ────────────────────────────────────────────────────
     try:
         raw_gray, processed_gray = validate_and_preprocess(filepath)
@@ -66,11 +66,13 @@ def process_upload(
         return {"status": "REJECTED", "reason": "Image has too few features.", "stage": "features"}
 
     # ── Step 4: Local registry (mirrors blockchain, faster for SIFT search) ──
+   
     all_entries = get_all_entries()
     if not all_entries:
+        if check_only:
+            return {"status": "NO_MATCH_FOUND"}
         return _certify(new_phash, new_kp, new_desc, title, author, filepath,
                         use_ipfs, use_blockchain, sift_inliers=None, registry_was_empty=True)
-
     # ── Step 5: Stage 1A — pHash exact filter (local) ────────────────────────
     for e in all_entries:
         dist = phash_distance(new_phash, e["phash"])
@@ -97,10 +99,12 @@ def process_upload(
             best_inliers, best_entry, best_result = result["inliers"], entry, result
 
     # ── Step 7: Verdict ──────────────────────────────────────────────────────
+    
     if best_result is None or best_result["verdict"] == "DIFFERENT":
+        if check_only:
+            return {"status": "NO_MATCH_FOUND"}
         return _certify(new_phash, new_kp, new_desc, title, author, filepath,
                         use_ipfs, use_blockchain, sift_inliers=best_inliers)
-
     if best_result["verdict"] == "REVIEW":
         return {
             "status": "FLAGGED_FOR_REVIEW", "stage": "sift_ransac",

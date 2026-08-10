@@ -1,6 +1,8 @@
+import Gallery from "./pages/Gallery";
 import Upload from "./pages/Upload";
 import { Routes, Route } from "react-router-dom";
 import Navbar from "./components/Navbar";
+import Search from "./pages/Search";
 
 function Placeholder({ title }) {
   return (
@@ -17,8 +19,8 @@ export default function App() {
       <main className="mx-auto max-w-7xl px-6 py-10">
         <Routes>
           <Route path="/" element={<Upload />} />
-          <Route path="/gallery" element={<Placeholder title="Gallery" />} />
-          <Route path="/search" element={<Placeholder title="Search" />} />
+          <Route path="/gallery" element={<Gallery />} />
+          <Route path="/search" element={<Search />} />
           <Route path="/profile" element={<Placeholder title="Profile" />} />
         </Routes>
       </main>

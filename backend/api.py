@@ -66,6 +66,31 @@ async def register(
     finally:
         os.unlink(tmp_path)  # clean up temp file
 
+@app.post("/api/check")
+async def check(file: UploadFile = File(...)):
+    """
+    Checks if an uploaded image matches anything already registered,
+    WITHOUT certifying it. Pure verification — no IPFS upload, no
+    blockchain write, no local registry write.
+
+    Used by the Search page for "is my work protected?" or
+    "is this a copy of something?" queries.
+    """
+    suffix = os.path.splitext(file.filename)[1] or ".jpg"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        shutil.copyfileobj(file.file, tmp)
+        tmp_path = tmp.name
+
+    try:
+        result = process_upload(
+            tmp_path, "Search Check", "Search",
+            use_ipfs=True, use_blockchain=True, check_only=True,
+        )
+        return _serialize_result(result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        os.unlink(tmp_path)
 
 @app.get("/api/gallery")
 def gallery():
@@ -77,7 +102,10 @@ def gallery():
 def _serialize_result(result: dict) -> dict:
     """Converts a pipeline result dict into a JSON-safe structure."""
     out = {"status": result["status"]}
-
+    
+    if result["status"] == "NO_MATCH_FOUND":
+        return out
+    
     if result["status"] == "CERTIFIED":
         out["certificate"] = _serialize_entry(result["certificate"])
         out["registry_was_empty"] = result.get("registry_was_empty", False)
