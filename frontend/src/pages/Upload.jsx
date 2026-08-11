@@ -2,11 +2,12 @@ import { useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Upload as UploadIcon, CheckCircle2, XCircle, AlertTriangle, Loader2 } from "lucide-react";
 import { useWallet } from "../context/WalletContext";
-
-const API_BASE = "http://localhost:8000";
+import { useAuth } from "../context/AuthContext";
+import { registerOnChain } from "../contract";
 
 export default function Upload() {
-  const { address, isConnected, isCorrectNetwork } = useWallet();
+  const { address, signer, isConnected, isCorrectNetwork } = useWallet();
+  const { isLoggedIn, authFetch } = useAuth();
 
   const [file, setFile] = useState(null);
   const [preview, setPreview] = useState(null);
@@ -14,6 +15,7 @@ export default function Upload() {
   const [author, setAuthor] = useState("");
   const [dragActive, setDragActive] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [statusText, setStatusText] = useState("");
   const [result, setResult] = useState(null);
 
   const handleFile = (f) => {
@@ -30,29 +32,70 @@ export default function Upload() {
     if (f) handleFile(f);
   }, []);
 
-  const canSubmit = file && title.trim() && author.trim() && !submitting;
+  const canSubmit = file && title.trim() && author.trim() && !submitting && isLoggedIn;
 
   const submit = async () => {
     if (!canSubmit) return;
     setSubmitting(true);
     setResult(null);
 
-    const formData = new FormData();
-    formData.append("file", file);
-    formData.append("title", title);
-    formData.append("author", author);
-
     try {
-      const res = await fetch(`${API_BASE}/api/register`, {
-        method: "POST",
-        body: formData,
+      // ── Step 1: Detection + IPFS upload (backend, no blockchain write) ──
+      setStatusText("Checking for plagiarism and uploading to IPFS...");
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("title", title);
+      formData.append("author", author);
+
+      const prepRes = await authFetch("/api/prepare", { method: "POST", body: formData });
+      const prepData = await prepRes.json();
+
+      if (!prepRes.ok) {
+        setResult({ status: "ERROR", reason: prepData.detail || "Request failed." });
+        return;
+      }
+
+      if (prepData.status !== "CERTIFIED") {
+        setResult(prepData);
+        return;
+      }
+
+      // ── Step 2: Sign the blockchain transaction via MetaMask ────────────
+      setStatusText("Waiting for you to confirm in MetaMask...");
+      const cert = prepData.certificate;
+      const { txHash, onchainId } = await registerOnChain(signer, {
+        title,
+        author,
+        phash: cert.phash,
+        imageCid: cert.image_cid,
+        metadataCid: cert.metadata_cid,
       });
-      const data = await res.json();
-      setResult(data);
+
+      // ── Step 3: Confirm with backend — patch the registry entry ─────────
+      setStatusText("Finalizing certificate...");
+      const confirmRes = await authFetch("/api/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          entry_id: cert.id,
+          tx_hash: txHash,
+          onchain_id: onchainId,
+          owner_address: address,
+        }),
+      });
+      const confirmedEntry = await confirmRes.json();
+
+      if (!confirmRes.ok) {
+        setResult({ status: "ERROR", reason: confirmedEntry.detail || "Could not finalize certificate." });
+        return;
+      }
+
+      setResult({ status: "CERTIFIED", certificate: confirmedEntry });
     } catch (err) {
-      setResult({ status: "ERROR", reason: err.message });
+      setResult({ status: "ERROR", reason: err.message || "Transaction failed or was rejected." });
     } finally {
       setSubmitting(false);
+      setStatusText("");
     }
   };
 
@@ -77,14 +120,21 @@ export default function Upload() {
         Upload a sketch to check for plagiarism and register it on-chain, permanently.
       </p>
 
-      {!isConnected && (
+      {!isLoggedIn && (
         <div className="mb-6 flex items-center gap-3 rounded-xl border-2 border-black bg-yellow-200 px-5 py-4">
           <AlertTriangle size={20} />
-          <span className="font-medium">Connect your wallet before registering an artwork.</span>
+          <span className="font-medium">Log in to your Artchain account before registering an artwork.</span>
         </div>
       )}
 
-      {isConnected && !isCorrectNetwork && (
+      {isLoggedIn && !isConnected && (
+        <div className="mb-6 flex items-center gap-3 rounded-xl border-2 border-black bg-yellow-200 px-5 py-4">
+          <AlertTriangle size={20} />
+          <span className="font-medium">Connect your wallet to sign the certification transaction.</span>
+        </div>
+      )}
+
+      {isLoggedIn && isConnected && !isCorrectNetwork && (
         <div className="mb-6 flex items-center gap-3 rounded-xl border-2 border-black bg-yellow-200 px-5 py-4">
           <AlertTriangle size={20} />
           <span className="font-medium">Switch to Polygon Amoy Testnet to continue.</span>
@@ -92,7 +142,6 @@ export default function Upload() {
       )}
 
       <div className="grid grid-cols-1 gap-8 md:grid-cols-2">
-        {/* ── Upload dropzone ─────────────────────────────────────────── */}
         <div>
           <label
             onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
@@ -111,11 +160,7 @@ export default function Upload() {
               onChange={(e) => handleFile(e.target.files?.[0])}
             />
             {preview ? (
-              <img
-                src={preview}
-                alt="preview"
-                className="h-full w-full rounded-xl object-contain p-3"
-              />
+              <img src={preview} alt="preview" className="h-full w-full rounded-xl object-contain p-3" />
             ) : (
               <>
                 <UploadIcon size={40} className="mb-3 text-black/40" />
@@ -126,7 +171,6 @@ export default function Upload() {
           </label>
         </div>
 
-        {/* ── Form fields ─────────────────────────────────────────────── */}
         <div className="flex flex-col gap-5">
           <div>
             <label className="mb-1 block text-sm font-bold uppercase tracking-wide text-black/60">
@@ -173,7 +217,7 @@ export default function Upload() {
             {submitting ? (
               <>
                 <Loader2 className="animate-spin" size={18} />
-                Checking, uploading, certifying...
+                {statusText || "Processing..."}
               </>
             ) : (
               "Certify Artwork"
@@ -182,7 +226,6 @@ export default function Upload() {
         </div>
       </div>
 
-      {/* ── Result panel ─────────────────────────────────────────────── */}
       <AnimatePresence>
         {result && <ResultPanel result={result} onReset={reset} />}
       </AnimatePresence>
@@ -193,6 +236,7 @@ export default function Upload() {
 function ResultPanel({ result, onReset }) {
   const isCertified = result.status === "CERTIFIED";
   const isReview = result.status === "FLAGGED_FOR_REVIEW";
+  const isError = result.status === "ERROR";
   const isRejected = result.status === "REJECTED";
 
   return (
@@ -207,11 +251,12 @@ function ResultPanel({ result, onReset }) {
       <div className="mb-4 flex items-center gap-3">
         {isCertified && <CheckCircle2 size={32} />}
         {isReview && <AlertTriangle size={32} />}
-        {isRejected && <XCircle size={32} />}
+        {(isRejected || isError) && <XCircle size={32} />}
         <h2 className="font-serif text-3xl font-black">
           {isCertified && "Certified on-chain"}
           {isReview && "Flagged for review"}
           {isRejected && "Registration rejected"}
+          {isError && "Something went wrong"}
         </h2>
       </div>
 
@@ -234,6 +279,9 @@ function ResultPanel({ result, onReset }) {
               link={`https://amoy.polygonscan.com/tx/${result.certificate.tx_hash}`}
             />
           )}
+          <p className="mt-3 text-xs font-semibold text-black/60">
+            A certificate confirmation email has been sent to your account.
+          </p>
         </div>
       )}
 
@@ -243,12 +291,15 @@ function ResultPanel({ result, onReset }) {
           {result.sift_inliers != null && (
             <Row label="SIFT inliers" value={`${result.sift_inliers} (${((result.inlier_ratio || 0) * 100).toFixed(0)}% match)`} />
           )}
+          <p className="mt-3 text-xs font-semibold text-black/60">
+            A warning email has been sent to your account.
+          </p>
         </div>
       )}
 
-      {isRejected && !result.matched_with && (
+      {(isRejected && !result.matched_with) || isError ? (
         <p className="font-medium">{result.reason}</p>
-      )}
+      ) : null}
 
       <button
         onClick={onReset}

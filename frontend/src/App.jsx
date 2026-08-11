@@ -3,6 +3,9 @@ import Upload from "./pages/Upload";
 import { Routes, Route } from "react-router-dom";
 import Navbar from "./components/Navbar";
 import Search from "./pages/Search";
+import Login from "./pages/Login";
+
+import Dashboard from "./pages/Dashboard";
 
 function Placeholder({ title }) {
   return (
@@ -21,7 +24,8 @@ export default function App() {
           <Route path="/" element={<Upload />} />
           <Route path="/gallery" element={<Gallery />} />
           <Route path="/search" element={<Search />} />
-          <Route path="/profile" element={<Placeholder title="Profile" />} />
+          <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/login" element={<Login />} />
         </Routes>
       </main>
     </div>

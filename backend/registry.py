@@ -146,8 +146,11 @@ def _save_meta(entries):
     os.makedirs(REGISTRY_DIR, exist_ok=True)
     with open(REGISTRY_FILE, "w") as f: json.dump(entries, f, indent=2)
 
+
+
 def register_artwork(phash, keypoints, descriptors, title, author,
-                     filepath, image_cid=None, metadata_cid=None):
+                     filepath, image_cid=None, metadata_cid=None, owner_address=None):
+    
     os.makedirs(DESC_DIR, exist_ok=True)
     entries  = _load_meta()
     entry_id = len(entries) + 1
@@ -171,6 +174,7 @@ def register_artwork(phash, keypoints, descriptors, title, author,
         "timestamp":    datetime.now(timezone.utc).isoformat(),
         "desc_path":    desc_path,
         "kp_count":     len(keypoints),
+        "owner_address": owner_address,
     }
     entries.append(entry)
     _save_meta(entries)
@@ -187,6 +191,78 @@ def load_descriptors(entry):
         for p in data["keypoints"]
     ]
     return kps, data["descriptors"]
+
+ATTEMPTS_FILE = os.path.join(REGISTRY_DIR, "attempts.json")
+
+
+def _load_attempts() -> list:
+    if not os.path.exists(ATTEMPTS_FILE):
+        return []
+    with open(ATTEMPTS_FILE) as f:
+        return json.load(f)
+
+
+def _save_attempts(attempts: list):
+    os.makedirs(REGISTRY_DIR, exist_ok=True)
+    with open(ATTEMPTS_FILE, "w") as f:
+        json.dump(attempts, f, indent=2)
+
+
+def log_attempt(
+    verdict: str,           # "REJECTED" or "FLAGGED_FOR_REVIEW"
+    attempted_title: str,
+    attempted_author: str,
+    matched_artwork_id,
+    matched_owner_address: str,
+    sift_inliers=None,
+):
+    """
+    Records a plagiarism attempt caught by the system. Used to power
+    'X copies of your work have been caught' stats on the Profile page.
+    """
+    attempts = _load_attempts()
+    attempts.append({
+        "verdict":              verdict,
+        "attempted_title":      attempted_title,
+        "attempted_author":     attempted_author,
+        "matched_artwork_id":   matched_artwork_id,
+        "matched_owner_address": matched_owner_address,
+        "sift_inliers":         sift_inliers,
+        "timestamp":            datetime.now(timezone.utc).isoformat(),
+    })
+    _save_attempts(attempts)
+
+
+def get_attempts_against_owner(owner_address: str) -> list:
+    """Returns all logged copy-attempts made against a specific owner's artworks."""
+    if not owner_address:
+        return []
+    attempts = _load_attempts()
+    return [a for a in attempts if a["matched_owner_address"] == owner_address]
+
+
+def get_entries_by_owner(owner_address: str) -> list:
+    """Returns all registry entries owned by a specific wallet address."""
+    if not owner_address:
+        return []
+    entries = _load_meta()
+    return [e for e in entries if e.get("owner_address") == owner_address]
+
+def update_entry(entry_id: int, **fields) -> dict:
+    """
+    Updates specific fields of an existing registry entry.
+    Used after the frontend signs and confirms a blockchain transaction —
+    patches in tx_hash, onchain_id, and the real owner_address (from
+    MetaMask), since the entry was created before the on-chain write
+    happened (see api.py /api/prepare and /api/confirm).
+    """
+    entries = _load_meta()
+    for e in entries:
+        if e["id"] == entry_id:
+            e.update(fields)
+            _save_meta(entries)
+            return e
+    raise ValueError(f"No entry with id {entry_id}")
 
 if __name__ == "__main__":
     entries = get_all_entries()

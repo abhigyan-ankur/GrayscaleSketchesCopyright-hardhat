@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { ExternalLink, ImageOff, Loader2 } from "lucide-react";
+import { ImageOff, Loader2 } from "lucide-react";
+import CertificateModal from "../components/CertificateModal";
 
 const API_BASE = "http://localhost:8000";
 
@@ -8,6 +9,7 @@ export default function Gallery() {
   const [entries, setEntries] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [selected, setSelected] = useState(null);
 
   useEffect(() => {
     fetch(`${API_BASE}/api/gallery`)
@@ -32,7 +34,7 @@ export default function Gallery() {
         Certified Gallery
       </motion.h1>
       <p className="mb-10 text-lg text-black/60">
-        Every artwork permanently registered on-chain, in order of certification.
+        Every artwork permanently registered on-chain. Click any piece for its full certificate.
       </p>
 
       {loading && (
@@ -57,25 +59,28 @@ export default function Gallery() {
 
       <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
         {entries.map((entry, i) => (
-          <ArtworkCard key={entry.id} entry={entry} index={i} />
+          <ArtworkCard key={entry.id} entry={entry} index={i} onClick={() => setSelected(entry)} />
         ))}
       </div>
+
+      {selected && <CertificateModal entry={selected} onClose={() => setSelected(null)} />}
     </div>
   );
 }
 
-function ArtworkCard({ entry, index }) {
+function ArtworkCard({ entry, index, onClick }) {
   const imageUrl = entry.image_cid
     ? `https://gateway.pinata.cloud/ipfs/${entry.image_cid}`
     : null;
 
   return (
-    <motion.div
+    <motion.button
+      onClick={onClick}
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: index * 0.05 }}
       whileHover={{ y: -4 }}
-      className="group overflow-hidden rounded-2xl border-4 border-black bg-white shadow-[5px_5px_0_0_#000] transition-shadow hover:shadow-[8px_8px_0_0_#000]"
+      className="group overflow-hidden rounded-2xl border-4 border-black bg-white text-left shadow-[5px_5px_0_0_#000] transition-shadow hover:shadow-[8px_8px_0_0_#000]"
     >
       <div className="aspect-square overflow-hidden border-b-4 border-black bg-black/5">
         {imageUrl ? (
@@ -96,21 +101,14 @@ function ArtworkCard({ entry, index }) {
         <p className="mb-3 text-sm font-medium text-black/50">by {entry.author}</p>
 
         <div className="flex flex-col gap-1 font-mono text-xs text-black/40">
-          <span>pHash: {entry.phash?.slice(0, 16)}...</span>
+          <span>Artchain #{entry.id}</span>
           <span>{new Date(entry.timestamp).toLocaleDateString()}</span>
         </div>
 
-        {entry.tx_hash && (
-          <a
-            href={`https://amoy.polygonscan.com/tx/${entry.tx_hash}`}
-            target="_blank"
-            rel="noreferrer"
-            className="mt-3 inline-flex items-center gap-1 rounded-full border-2 border-black bg-green-200 px-3 py-1 text-xs font-bold hover:bg-green-300 transition-colors"
-          >
-            On-chain <ExternalLink size={12} />
-          </a>
-        )}
+        <span className="mt-3 inline-block rounded-full border-2 border-black bg-black px-3 py-1 text-xs font-bold text-white transition-colors group-hover:bg-white group-hover:text-black">
+          View Certificate
+        </span>
       </div>
-    </motion.div>
+    </motion.button>
   );
 }

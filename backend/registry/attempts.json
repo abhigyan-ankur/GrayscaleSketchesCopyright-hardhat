@@ -1,0 +1,56 @@
+[
+  {
+    "verdict": "REJECTED",
+    "attempted_title": "hands 2",
+    "attempted_author": "buggysama",
+    "matched_artwork_id": 6,
+    "matched_owner_address": "0xBaA41972a4E7C4D234A91Eb4c29dc043A0414e07",
+    "sift_inliers": 1021,
+    "timestamp": "2026-08-10T04:57:58.910052+00:00"
+  },
+  {
+    "verdict": "REJECTED",
+    "attempted_title": "sleepycat2",
+    "attempted_author": "arthur",
+    "matched_artwork_id": 8,
+    "matched_owner_address": null,
+    "sift_inliers": null,
+    "timestamp": "2026-08-11T08:27:23.807852+00:00"
+  },
+  {
+    "verdict": "REJECTED",
+    "attempted_title": "cat",
+    "attempted_author": "car",
+    "matched_artwork_id": 9,
+    "matched_owner_address": null,
+    "sift_inliers": null,
+    "timestamp": "2026-08-11T08:28:00.950567+00:00"
+  },
+  {
+    "verdict": "REJECTED",
+    "attempted_title": "car",
+    "attempted_author": "cat",
+    "matched_artwork_id": 9,
+    "matched_owner_address": null,
+    "sift_inliers": null,
+    "timestamp": "2026-08-11T08:28:40.161209+00:00"
+  },
+  {
+    "verdict": "REJECTED",
+    "attempted_title": "car ",
+    "attempted_author": "car1",
+    "matched_artwork_id": 9,
+    "matched_owner_address": null,
+    "sift_inliers": null,
+    "timestamp": "2026-08-11T13:31:11.878511+00:00"
+  },
+  {
+    "verdict": "REJECTED",
+    "attempted_title": "Dog",
+    "attempted_author": "Inuarashi",
+    "matched_artwork_id": 11,
+    "matched_owner_address": null,
+    "sift_inliers": null,
+    "timestamp": "2026-08-11T13:42:55.098132+00:00"
+  }
+]

@@ -1,24 +1,26 @@
 import { Link, useLocation } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Wallet, Palette } from "lucide-react";
+import { Wallet, Palette, LogIn, LogOut, User } from "lucide-react";
 import { useWallet } from "../context/WalletContext";
+import { useAuth } from "../context/AuthContext";
 
 function shortenAddress(addr) {
   if (!addr) return "";
   return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
 }
 
+const navLinks = [
+  { label: "Upload", path: "/" },
+  { label: "Gallery", path: "/gallery" },
+  { label: "Search", path: "/search" },
+  { label: "Dashboard", path: "/dashboard" },
+];
+
 export default function Navbar() {
   const { address, isConnected, isCorrectNetwork, connecting, error, connect, switchToAmoy } =
     useWallet();
+  const { user, isLoggedIn, logout } = useAuth();
   const location = useLocation();
-
-  const navLinks = [
-    { label: "Upload", path: "/" },
-    { label: "Gallery", path: "/gallery" },
-    { label: "Search", path: "/search" },
-    { label: "Profile", path: "/profile" },
-  ];
 
   return (
     <nav className="sticky top-0 z-50 border-b-4 border-black bg-[#f4f1ea]">
@@ -32,7 +34,7 @@ export default function Navbar() {
             <Palette size={20} />
           </motion.div>
           <span className="font-serif text-2xl font-black tracking-tight text-black">
-            Provenance
+            Artchain
           </span>
         </Link>
 
@@ -60,33 +62,56 @@ export default function Navbar() {
           })}
         </div>
 
-        {/* Wallet button */}
-        <div className="flex flex-col items-end gap-1">
-          {!isConnected ? (
-            <motion.button
-              whileHover={{ scale: 1.03 }}
-              whileTap={{ scale: 0.97 }}
-              onClick={connect}
-              disabled={connecting}
-              className="flex items-center gap-2 rounded-full border-2 border-black bg-black px-5 py-2.5 font-semibold text-[#f4f1ea] shadow-[3px_3px_0_0_#000] transition-all hover:shadow-[1px_1px_0_0_#000] disabled:opacity-50"
-            >
-              <Wallet size={16} />
-              {connecting ? "Connecting..." : "Connect Wallet"}
-            </motion.button>
-          ) : !isCorrectNetwork ? (
+        {/* Account — primary — then Wallet — secondary */}
+        <div className="flex items-center gap-3">
+          {/* Login / Account */}
+          {isLoggedIn ? (
             <button
-              onClick={switchToAmoy}
-              className="flex items-center gap-2 rounded-full border-2 border-black bg-yellow-300 px-5 py-2.5 font-semibold text-black shadow-[3px_3px_0_0_#000] transition-all hover:shadow-[1px_1px_0_0_#000]"
+              onClick={logout}
+              className="flex items-center gap-2 rounded-full border-2 border-black bg-white px-4 py-2 text-sm font-semibold transition-colors hover:bg-black hover:text-white"
             >
-              Switch to Polygon Amoy
+              <User size={14} />
+              {user?.email?.split("@")[0]}
+              <LogOut size={14} />
             </button>
           ) : (
-            <div className="flex items-center gap-2 rounded-full border-2 border-black bg-green-300 px-5 py-2.5 font-semibold text-black shadow-[3px_3px_0_0_#000]">
-              <span className="h-2 w-2 rounded-full bg-green-700" />
-              {shortenAddress(address)}
-            </div>
+            <Link
+              to="/login"
+              className="flex items-center gap-2 rounded-full border-2 border-black bg-black px-5 py-2.5 font-semibold text-[#f4f1ea] shadow-[3px_3px_0_0_#000] transition-all hover:shadow-[1px_1px_0_0_#000]"
+            >
+              <LogIn size={16} />
+              Log In
+            </Link>
           )}
-          {error && <span className="text-xs font-medium text-red-600">{error}</span>}
+
+          {/* Wallet */}
+          <div className="flex flex-col items-end gap-1">
+            {!isConnected ? (
+              <motion.button
+                whileHover={{ scale: 1.03 }}
+                whileTap={{ scale: 0.97 }}
+                onClick={connect}
+                disabled={connecting}
+                className="flex items-center gap-2 rounded-full border-2 border-black bg-white px-4 py-2 text-sm font-semibold transition-colors hover:bg-black hover:text-white disabled:opacity-50"
+              >
+                <Wallet size={14} />
+                {connecting ? "Connecting..." : "Connect Wallet"}
+              </motion.button>
+            ) : !isCorrectNetwork ? (
+              <button
+                onClick={switchToAmoy}
+                className="flex items-center gap-2 rounded-full border-2 border-black bg-yellow-300 px-4 py-2 text-sm font-semibold text-black transition-colors hover:bg-yellow-400"
+              >
+                Switch to Polygon Amoy
+              </button>
+            ) : (
+              <div className="flex items-center gap-2 rounded-full border-2 border-black bg-green-300 px-4 py-2 text-sm font-semibold text-black">
+                <span className="h-2 w-2 rounded-full bg-green-700" />
+                {shortenAddress(address)}
+              </div>
+            )}
+            {error && <span className="text-xs font-medium text-red-600">{error}</span>}
+          </div>
         </div>
       </div>
     </nav>

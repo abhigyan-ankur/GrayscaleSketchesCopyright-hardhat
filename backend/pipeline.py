@@ -1,20 +1,34 @@
 """
 pipeline.py — Full pipeline: Part 1 (detection) + Part 2 (IPFS) + Part 4 (blockchain)
 
+Two-stage detection (restored):
+  Stage 1A — pHash pre-filter: fast, catches exact/near-exact reposts and
+             narrows which registry entries get compared via SIFT.
+             Empirically shown to score 24-34/64 on real crop/zoom/filter
+             attacks — i.e. it cannot detect real plagiarism alone, but it
+             is a legitimate and standard performance optimization (avoids
+             running expensive SIFT against the entire registry every time).
+  Stage 1B — SIFT + RANSAC: the actual arbiter of every verdict. All
+             accept/reject/review decisions are made here, using thresholds
+             validated against 6 real-world plagiarism pairs (96-99% inlier
+             ratio on true copies vs ~35% on coincidental false matches).
+
 Flow on CERTIFIED verdict:
   1. Upload image to IPFS       -> image_cid
   2. Upload metadata to IPFS    -> metadata_cid
   3. Register on blockchain     -> tx_hash, on-chain artwork_id
   4. Store everything in local registry (mirrors on-chain state for fast reads)
 
-use_ipfs=False and use_blockchain=False allow offline testing of just
-the detection logic without needing Pinata or a funded wallet.
+Every REJECTED / FLAGGED_FOR_REVIEW verdict is logged as an "attempt"
+against the matched artwork's owner, powering the Profile page's
+"copies of your work caught" stat.
 """
 
 from validator   import validate_and_preprocess, ValidationError
 from hasher      import compute_phash, phash_distance, PHASH_EXACT_THRESHOLD
 from sift_engine import extract_descriptors, match_against
-from registry    import register_artwork, get_all_entries, load_descriptors
+from registry    import register_artwork, get_all_entries, load_descriptors, log_attempt
+
 
 SIFT_CANDIDATE_THRESHOLD = 40
 
@@ -27,6 +41,7 @@ def process_upload(
     use_blockchain: bool = True,
     check_only: bool = False,
 ) -> dict:
+
     # ── Step 1: Validate ────────────────────────────────────────────────────
     try:
         raw_gray, processed_gray = validate_and_preprocess(filepath)
@@ -37,8 +52,6 @@ def process_upload(
     new_phash = compute_phash(processed_gray)
 
     # ── Step 2.5: On-chain duplicate pre-check (free, no gas) ───────────────
-    # Check the blockchain FIRST if enabled — this is the authoritative
-    # source of truth. Local registry is just a fast local mirror.
     if use_blockchain:
         try:
             from blockchain_client import BlockchainClient
@@ -46,6 +59,12 @@ def process_upload(
             exists, onchain_id = client.is_phash_registered(new_phash)
             if exists:
                 onchain_entry = client.get_artwork(onchain_id)
+                if not check_only:
+                    log_attempt("REJECTED", title, author, onchain_id,
+                               onchain_entry["owner"], sift_inliers=None)
+
+                
+                    
                 return {
                     "status": "REJECTED",
                     "reason": "Exact duplicate — already certified on-chain.",
@@ -65,24 +84,30 @@ def process_upload(
     if new_desc is None:
         return {"status": "REJECTED", "reason": "Image has too few features.", "stage": "features"}
 
-    # ── Step 4: Local registry (mirrors blockchain, faster for SIFT search) ──
-   
+    # ── Step 4: Local registry ──────────────────────────────────────────────
     all_entries = get_all_entries()
     if not all_entries:
         if check_only:
             return {"status": "NO_MATCH_FOUND"}
         return _certify(new_phash, new_kp, new_desc, title, author, filepath,
                         use_ipfs, use_blockchain, sift_inliers=None, registry_was_empty=True)
+
     # ── Step 5: Stage 1A — pHash exact filter (local) ────────────────────────
     for e in all_entries:
         dist = phash_distance(new_phash, e["phash"])
         if dist <= PHASH_EXACT_THRESHOLD:
+            if not check_only:
+                log_attempt("REJECTED", title, author, e["id"],
+                           e.get("owner_address"), sift_inliers=None)
+
+           
+                
             return {
                 "status": "REJECTED", "reason": "Exact or near-exact duplicate detected.",
                 "stage": "phash_filter", "matched_with": _summary(e), "phash_distance": dist,
             }
 
-    # ── Step 6: Stage 1B — SIFT + RANSAC ────────────────────────────────────
+    # ── Step 6: Stage 1B — SIFT + RANSAC (the actual detector) ──────────────
     candidates = sorted(
         [(phash_distance(new_phash, e["phash"]), e) for e in all_entries], key=lambda x: x[0]
     )
@@ -99,19 +124,25 @@ def process_upload(
             best_inliers, best_entry, best_result = result["inliers"], entry, result
 
     # ── Step 7: Verdict ──────────────────────────────────────────────────────
-    
     if best_result is None or best_result["verdict"] == "DIFFERENT":
         if check_only:
             return {"status": "NO_MATCH_FOUND"}
         return _certify(new_phash, new_kp, new_desc, title, author, filepath,
                         use_ipfs, use_blockchain, sift_inliers=best_inliers)
+
     if best_result["verdict"] == "REVIEW":
+        if not check_only:
+            log_attempt("FLAGGED_FOR_REVIEW", title, author, best_entry["id"],
+                       best_entry.get("owner_address"), sift_inliers=best_inliers)
         return {
             "status": "FLAGGED_FOR_REVIEW", "stage": "sift_ransac",
             "matched_with": _summary(best_entry), "sift_inliers": best_inliers,
             "inlier_ratio": best_result["inlier_ratio"], "scale_factor": best_result["scale"],
         }
 
+    if not check_only:
+        log_attempt("REJECTED", title, author, best_entry["id"],
+                   best_entry.get("owner_address"), sift_inliers=best_inliers)
     return {
         "status": "REJECTED", "reason": "Near-duplicate detected via geometric fingerprinting.",
         "stage": "sift_ransac", "matched_with": _summary(best_entry), "sift_inliers": best_inliers,
@@ -120,7 +151,8 @@ def process_upload(
 
 
 def _certify(phash, kp, desc, title, author, filepath,
-             use_ipfs, use_blockchain, sift_inliers=None, registry_was_empty=False) -> dict:
+             use_ipfs, use_blockchain, sift_inliers=None, registry_was_empty=False,
+             owner_address=None) -> dict:
 
     image_cid = metadata_cid = gateway_url = None
     ipfs_warning = blockchain_warning = None
@@ -153,6 +185,7 @@ def _certify(phash, kp, desc, title, author, filepath,
             if result["success"]:
                 tx_hash    = result["tx_hash"]
                 onchain_id = result["artwork_id"]
+                owner_address = owner_address or client.address
                 print(f"  ✓ On-chain ID : {onchain_id}")
                 print(f"  ✓ Tx hash     : {tx_hash}")
                 print(f"  ✓ Explorer    : {get_explorer_url(tx_hash)}")
@@ -169,6 +202,7 @@ def _certify(phash, kp, desc, title, author, filepath,
     entry = register_artwork(
         phash=phash, keypoints=kp, descriptors=desc, title=title, author=author,
         filepath=gateway_url or filepath, image_cid=image_cid, metadata_cid=metadata_cid,
+        owner_address=owner_address,
     )
     entry["tx_hash"]    = tx_hash
     entry["onchain_id"] = onchain_id
