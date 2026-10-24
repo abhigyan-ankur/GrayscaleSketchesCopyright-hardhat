@@ -9,6 +9,10 @@ export default defineConfig({
     version: "0.8.28",
   },
   networks: {
+    localhost: {
+      type: "http",
+      url: "http://127.0.0.1:8545",
+    },
     amoy: {
       type: "http",
       url: process.env.POLYGON_AMOY_RPC || "https://80002.rpc.thirdweb.com",
