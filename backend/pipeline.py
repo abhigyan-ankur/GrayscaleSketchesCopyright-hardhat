@@ -1,33 +1,30 @@
 """
-pipeline.py — Full pipeline: Part 1 (detection) + Part 2 (IPFS) + Part 4 (blockchain)
+pipeline.py — Full pipeline (Hardhat build)
 
-Two-stage detection (restored):
-  Stage 1A — pHash pre-filter: fast, catches exact/near-exact reposts and
-             narrows which registry entries get compared via SIFT.
-             Empirically shown to score 24-34/64 on real crop/zoom/filter
-             attacks — i.e. it cannot detect real plagiarism alone, but it
-             is a legitimate and standard performance optimization (avoids
-             running expensive SIFT against the entire registry every time).
-  Stage 1B — SIFT + RANSAC: the actual arbiter of every verdict. All
-             accept/reject/review decisions are made here, using thresholds
-             validated against 6 real-world plagiarism pairs (96-99% inlier
-             ratio on true copies vs ~35% on coincidental false matches).
+    validate -> pHash -> (chain duplicate check) -> local pHash filter
+             -> SIFT + RANSAC -> store image -> register on chain -> save to registry
 
-Flow on CERTIFIED verdict:
-  1. Upload image to IPFS       -> image_cid
-  2. Upload metadata to IPFS    -> metadata_cid
-  3. Register on blockchain     -> tx_hash, on-chain artwork_id
-  4. Store everything in local registry (mirrors on-chain state for fast reads)
+Two-stage detection:
+  Stage 1A — pHash pre-filter: fast, catches exact / near-exact reposts and
+             orders which registry entries get compared with SIFT.
+  Stage 1B — SIFT + RANSAC: the real arbiter of every accept / reject / review
+             verdict (thresholds validated on 6 real plagiarism pairs).
 
-Every REJECTED / FLAGGED_FOR_REVIEW verdict is logged as an "attempt"
-against the matched artwork's owner, powering the Profile page's
-"copies of your work caught" stat.
+The registry is persistent (see registry.py), so a new session compares every
+new upload against everything certified before.
+
+Two ways to finish a CERTIFIED verdict:
+  * server-signed (CLI, /api/register): the backend registers on the local
+    chain itself using a Hardhat account.
+  * wallet-signed (website): pending=True saves a *pending* row; the browser
+    signs the transaction and /api/confirm promotes the row to certified.
 """
 
 from validator   import validate_and_preprocess, ValidationError
 from hasher      import compute_phash, phash_distance, PHASH_EXACT_THRESHOLD
 from sift_engine import extract_descriptors, match_against
 from registry    import register_artwork, get_all_entries, load_descriptors, log_attempt
+from storage     import store_artwork, image_url_for
 
 
 SIFT_CANDIDATE_THRESHOLD = 40
@@ -40,6 +37,8 @@ def process_upload(
     use_ipfs: bool = True,
     use_blockchain: bool = True,
     check_only: bool = False,
+    pending: bool = False,
+    owner_address: str = None,
 ) -> dict:
 
     # ── Step 1: Validate ────────────────────────────────────────────────────
@@ -61,10 +60,7 @@ def process_upload(
                 onchain_entry = client.get_artwork(onchain_id)
                 if not check_only:
                     log_attempt("REJECTED", title, author, onchain_id,
-                               onchain_entry["owner"], sift_inliers=None)
-
-                
-                    
+                                onchain_entry["owner"], sift_inliers=None)
                 return {
                     "status": "REJECTED",
                     "reason": "Exact duplicate — already certified on-chain.",
@@ -79,7 +75,7 @@ def process_upload(
         except Exception as e:
             print(f"  ⚠ Blockchain pre-check unavailable, continuing with local checks: {e}")
 
-    # ── Step 3: SIFT descriptors ──────────────────────────────────────────────
+    # ── Step 3: SIFT descriptors ────────────────────────────────────────────
     new_kp, new_desc = extract_descriptors(raw_gray)
     if new_desc is None:
         return {"status": "REJECTED", "reason": "Image has too few features.", "stage": "features"}
@@ -90,18 +86,17 @@ def process_upload(
         if check_only:
             return {"status": "NO_MATCH_FOUND"}
         return _certify(new_phash, new_kp, new_desc, title, author, filepath,
-                        use_ipfs, use_blockchain, sift_inliers=None, registry_was_empty=True)
+                        use_ipfs, use_blockchain, sift_inliers=None,
+                        registry_was_empty=True, owner_address=owner_address,
+                        pending=pending)
 
-    # ── Step 5: Stage 1A — pHash exact filter (local) ────────────────────────
+    # ── Step 5: Stage 1A — pHash exact filter (local) ───────────────────────
     for e in all_entries:
         dist = phash_distance(new_phash, e["phash"])
         if dist <= PHASH_EXACT_THRESHOLD:
             if not check_only:
                 log_attempt("REJECTED", title, author, e["id"],
-                           e.get("owner_address"), sift_inliers=None)
-
-           
-                
+                            e.get("owner_address"), sift_inliers=None)
             return {
                 "status": "REJECTED", "reason": "Exact or near-exact duplicate detected.",
                 "stage": "phash_filter", "matched_with": _summary(e), "phash_distance": dist,
@@ -123,17 +118,18 @@ def process_upload(
         if result["inliers"] > best_inliers:
             best_inliers, best_entry, best_result = result["inliers"], entry, result
 
-    # ── Step 7: Verdict ──────────────────────────────────────────────────────
+    # ── Step 7: Verdict ─────────────────────────────────────────────────────
     if best_result is None or best_result["verdict"] == "DIFFERENT":
         if check_only:
             return {"status": "NO_MATCH_FOUND"}
         return _certify(new_phash, new_kp, new_desc, title, author, filepath,
-                        use_ipfs, use_blockchain, sift_inliers=best_inliers)
+                        use_ipfs, use_blockchain, sift_inliers=best_inliers,
+                        owner_address=owner_address, pending=pending)
 
     if best_result["verdict"] == "REVIEW":
         if not check_only:
             log_attempt("FLAGGED_FOR_REVIEW", title, author, best_entry["id"],
-                       best_entry.get("owner_address"), sift_inliers=best_inliers)
+                        best_entry.get("owner_address"), sift_inliers=best_inliers)
         return {
             "status": "FLAGGED_FOR_REVIEW", "stage": "sift_ransac",
             "matched_with": _summary(best_entry), "sift_inliers": best_inliers,
@@ -142,7 +138,7 @@ def process_upload(
 
     if not check_only:
         log_attempt("REJECTED", title, author, best_entry["id"],
-                   best_entry.get("owner_address"), sift_inliers=best_inliers)
+                    best_entry.get("owner_address"), sift_inliers=best_inliers)
     return {
         "status": "REJECTED", "reason": "Near-duplicate detected via geometric fingerprinting.",
         "stage": "sift_ransac", "matched_with": _summary(best_entry), "sift_inliers": best_inliers,
@@ -152,78 +148,67 @@ def process_upload(
 
 def _certify(phash, kp, desc, title, author, filepath,
              use_ipfs, use_blockchain, sift_inliers=None, registry_was_empty=False,
-             owner_address=None) -> dict:
+             owner_address=None, pending=False) -> dict:
 
-    image_cid = metadata_cid = gateway_url = None
-    ipfs_warning = blockchain_warning = None
     tx_hash = onchain_id = None
+    storage_warning = blockchain_warning = None
 
-    # ── IPFS upload ──────────────────────────────────────────────────────────
-    if use_ipfs:
-        try:
-            from ipfs_client import upload_image, upload_metadata, get_gateway_url
-            print("  Uploading to IPFS...")
-            image_cid    = upload_image(filepath, title, author)
-            metadata_cid = upload_metadata({
-                "title": title, "author": author, "image_cid": image_cid, "phash": phash
-            })
-            gateway_url = get_gateway_url(image_cid)
-            print(f"  ✓ Image CID : {image_cid}")
-            print(f"  ✓ Meta  CID : {metadata_cid}")
-        except Exception as e:
-            ipfs_warning = str(e)
-            print(f"  ⚠ IPFS failed (local fallback): {e}")
+    # ── Keep the image + certificate metadata ───────────────────────────────
+    print("  Storing artwork...")
+    stored = store_artwork(filepath, title, author, phash, allow_ipfs=use_ipfs)
+    storage_warning = stored.get("warning")
+    print(f"  ✓ Image ID : {stored['image_cid']}  ({stored['storage']})")
+    if storage_warning:
+        print(f"  ⚠ {storage_warning}")
 
-    # ── Blockchain registration ─────────────────────────────────────────────
-    if use_blockchain and image_cid and metadata_cid:
+    # ── Server-signed blockchain registration (CLI / /api/register) ─────────
+    if use_blockchain and not pending:
         try:
-            from blockchain_client import BlockchainClient, get_explorer_url
-            print("  Registering on blockchain...")
+            from blockchain_client import BlockchainClient
+            print("  Registering on the local blockchain...")
             client = BlockchainClient()
-            result = client.register_artwork(title, author, phash, image_cid, metadata_cid)
-
-            if result["success"]:
-                tx_hash    = result["tx_hash"]
-                onchain_id = result["artwork_id"]
-                owner_address = owner_address or client.address
+            res = client.register_artwork(
+                title, author, phash, stored["image_cid"], stored["metadata_cid"],
+                owner=owner_address,
+            )
+            if res["success"]:
+                tx_hash, onchain_id = res["tx_hash"], res["artwork_id"]
+                owner_address = res["owner"]
                 print(f"  ✓ On-chain ID : {onchain_id}")
                 print(f"  ✓ Tx hash     : {tx_hash}")
-                print(f"  ✓ Explorer    : {get_explorer_url(tx_hash)}")
             else:
-                blockchain_warning = result["error"]
-                print(f"  ⚠ Blockchain registration failed: {result['error']}")
+                blockchain_warning = res["error"]
+                print(f"  ⚠ Blockchain registration failed: {res['error']}")
         except Exception as e:
             blockchain_warning = str(e)
-            print(f"  ⚠ Blockchain unavailable: {e}")
-    elif use_blockchain and not image_cid:
-        blockchain_warning = "Skipped — blockchain registration requires IPFS CIDs (use_ipfs must succeed first)"
+            print(f"  ⚠ Blockchain unavailable (will sync when the node is back): {e}")
 
-    # ── Local registry (always happens, mirrors on-chain/IPFS state) ────────
+    # ── Registry (always; this is what future uploads are matched against) ──
     entry = register_artwork(
         phash=phash, keypoints=kp, descriptors=desc, title=title, author=author,
-        filepath=gateway_url or filepath, image_cid=image_cid, metadata_cid=metadata_cid,
-        owner_address=owner_address,
+        filepath=filepath, image_cid=stored["image_cid"],
+        metadata_cid=stored["metadata_cid"], owner_address=owner_address,
+        local_image=stored["local_image"],
+        status="pending" if pending else "certified",
+        tx_hash=tx_hash, onchain_id=onchain_id,
     )
-    entry["tx_hash"]    = tx_hash
-    entry["onchain_id"] = onchain_id
 
     res = {"status": "CERTIFIED", "certificate": entry, "stage": "registration",
            "sift_inliers": sift_inliers}
     if registry_was_empty:
         res["registry_was_empty"] = True
-    if ipfs_warning:
-        res["ipfs_warning"] = ipfs_warning
+    if storage_warning:
+        res["ipfs_warning"] = storage_warning
     if blockchain_warning:
         res["blockchain_warning"] = blockchain_warning
     return res
 
 
 def _summary(e):
-    cid = e.get("image_cid")
     return {
         "id": e["id"], "title": e["title"], "author": e["author"],
         "registered_on": e["timestamp"],
-        "image_url": f"https://gateway.pinata.cloud/ipfs/{cid}" if cid else None,
+        "image_url": image_url_for(e),
     }
 
 
@@ -241,14 +226,13 @@ def print_result(result: dict):
         print(f"     Keypoints  : {c['kp_count']}")
         print(f"     Time       : {c['timestamp']}")
         if c.get("image_cid"):
-            print(f"     Image CID  : {c['image_cid']}")
-            print(f"     IPFS URL   : https://gateway.pinata.cloud/ipfs/{c['image_cid']}")
+            print(f"     Image ID   : {c['image_cid']}")
         if c.get("onchain_id"):
             print(f"     On-chain ID: {c['onchain_id']}")
             print(f"     Tx hash    : {c['tx_hash']}")
-            print(f"     Explorer   : https://amoy.polygonscan.com/tx/{c['tx_hash']}")
+            print(f"     Owner      : {c.get('owner_address')}")
         if result.get("ipfs_warning"):
-            print(f"     ⚠ IPFS: {result['ipfs_warning']}")
+            print(f"     ⚠ Storage: {result['ipfs_warning']}")
         if result.get("blockchain_warning"):
             print(f"     ⚠ Blockchain: {result['blockchain_warning']}")
 
@@ -279,5 +263,8 @@ def print_result(result: dict):
             print(f"     Matches   : '{m['title']}' by {m['author']}")
         else:
             print(f"  ✗  REJECTED — {result['reason']}")
+
+    elif s == "NO_MATCH_FOUND":
+        print("  ✓  NO MATCH — nothing registered looks like this image")
 
     print("═" * W + "\n")

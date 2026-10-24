@@ -1,189 +1,225 @@
 """
 registry.py
 -----------
-Local registry — stand-in for the blockchain smart contract (Part 3).
+Persistent local registry. This is the memory of the system.
 
-Stores per artwork:
-  - phash          : hex string (for fast coarse pre-filter)
-  - descriptors    : serialised SIFT descriptor matrix (for Stage 1B)
-  - keypoints      : serialised SIFT keypoint coordinates
-  - title, author  : metadata
-  - timestamp      : UTC ISO string (proof-of-registration time)
-  - filepath       : local path (becomes IPFS CID in Part 2)
+Per certified artwork it keeps:
+  - metadata + pHash                    -> data/registry/registry.json
+  - SIFT keypoints + descriptors        -> data/registry/descriptors/<id>.pkl
+  - copy attempts that were caught      -> data/registry/attempts.json
 
-Storage format:
-  registry/registry.json   — metadata + phash (human readable)
-  registry/descriptors/    — binary .pkl files (one per artwork ID)
-    Why separate? SIFT descriptor matrices are ~2MB each — keeping
-    them out of the JSON keeps registry.json readable and fast to load
-    for the pHash pre-filter step.
+Because all of this lives on disk, a new session (new process, restarted API,
+restarted blockchain) still matches new uploads against every earlier work.
 
-Interface (matches what Part 3 blockchain calls will look like):
-  register_artwork(...)  → entry dict
-  get_all_entries()      → list of entry dicts (metadata only)
-  load_descriptors(id)   → (keypoints, descriptors) numpy objects
+Rows with status "pending" were prepared by /api/prepare but not yet signed on
+chain. They are invisible to matching and the gallery, so a rejected wallet
+popup can never block a re-upload.
 
+On first run, an older backend/registry/ folder (previous version of this
+project) is copied into data/registry/ automatically.
+"""
 
 import json
 import os
 import pickle
-from datetime import datetime, timezone
+import shutil
+import threading
+from datetime import datetime, timezone, timedelta
 
-REGISTRY_DIR  = os.path.join(os.path.dirname(__file__), "registry")
+import cv2
+
+from config import BASE_DIR, REGISTRY_DIR, DESC_DIR
+
 REGISTRY_FILE = os.path.join(REGISTRY_DIR, "registry.json")
-DESC_DIR      = os.path.join(REGISTRY_DIR, "descriptors")
+ATTEMPTS_FILE = os.path.join(REGISTRY_DIR, "attempts.json")
+LEGACY_DIR    = os.path.join(BASE_DIR, "registry")
+
+_LOCK = threading.RLock()
 
 
-def _load_meta() -> list:
-    if not os.path.exists(REGISTRY_FILE):
-        return []
-    with open(REGISTRY_FILE, "r") as f:
+# ── helpers ──────────────────────────────────────────────────────────────────
+
+def norm_addr(addr):
+    """Wallet addresses are compared case-insensitively (MetaMask gives lower
+    case, the chain gives checksum case)."""
+    if isinstance(addr, str) and addr.strip():
+        return addr.strip().lower()
+    return None
+
+
+def _read_json(path, default):
+    if not os.path.exists(path):
+        return default
+    with open(path) as f:
         return json.load(f)
 
 
-def _save_meta(entries: list):
-    os.makedirs(REGISTRY_DIR, exist_ok=True)
-    with open(REGISTRY_FILE, "w") as f:
-        json.dump(entries, f, indent=2)
+def _write_json(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, path)          # atomic: a crash can't leave a half-written file
 
 
-def register_artwork(
-    phash:       str,
-    keypoints:   list,
-    descriptors, # np.ndarray
-    title:       str,
-    author:      str,
-    filepath:    str,
-) -> dict:
-    
-    Registers a new artwork. Saves metadata to JSON and descriptors to disk.
-    Returns the created certificate entry.
-    
-    os.makedirs(DESC_DIR, exist_ok=True)
-    entries = _load_meta()
-    entry_id = len(entries) + 1
-
-    # Save descriptor binary separately
-    desc_path = os.path.join(DESC_DIR, f"{entry_id}.pkl")
-    # Serialise keypoints as (pt, size, angle, response, octave, class_id) tuples
-    kp_data = [
-        (kp.pt, kp.size, kp.angle, kp.response, kp.octave, kp.class_id)
-        for kp in keypoints
-    ]
-    with open(desc_path, "wb") as f:
-        pickle.dump({"keypoints": kp_data, "descriptors": descriptors}, f)
-
-    entry = {
-        "id":        entry_id,
-        "title":     title,
-        "author":    author,
-        "filepath":  filepath,
-        "phash":     phash,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "desc_path": desc_path,
-        "kp_count":  len(keypoints),
-    }
-    entries.append(entry)
-    _save_meta(entries)
-    return entry
+def _desc_path(entry_id):
+    return os.path.join(DESC_DIR, f"{entry_id}.pkl")
 
 
-def get_all_entries() -> list:
-    Returns all registry entries (metadata only, no descriptors).
-    return _load_meta()
+def _delete_desc(entry_id):
+    try:
+        os.remove(_desc_path(entry_id))
+    except FileNotFoundError:
+        pass
 
 
-def load_descriptors(entry: dict) -> tuple:
-    
-    Loads SIFT keypoints and descriptors for a registry entry.
-
-    Returns:
-        (keypoints_list, descriptors_ndarray)
-    
-    with open(entry["desc_path"], "rb") as f:
-        data = pickle.load(f)
-
-    # Reconstruct cv2.KeyPoint objects from stored tuples
-    keypoints = [
-        cv2.KeyPoint(
-            x=pt[0][0], y=pt[0][1],
-            size=pt[1], angle=pt[2],
-            response=pt[3], octave=pt[4], class_id=pt[5]
-        )
-        for pt in data["keypoints"]
-    ]
-    return keypoints, data["descriptors"]
+def _migrate_legacy():
+    """Copies the old backend/registry/ folder into data/registry/ once."""
+    if os.path.exists(REGISTRY_FILE) or not os.path.isdir(LEGACY_DIR):
+        return
+    copied = False
+    for name in ("registry.json", "attempts.json"):
+        src = os.path.join(LEGACY_DIR, name)
+        if os.path.exists(src):
+            shutil.copy2(src, os.path.join(REGISTRY_DIR, name))
+            copied = True
+    src = os.path.join(LEGACY_DIR, "descriptors")
+    if os.path.isdir(src):
+        shutil.copytree(src, DESC_DIR, dirs_exist_ok=True)
+        copied = True
+    if copied:
+        print(f"[registry] imported earlier registry from {LEGACY_DIR}")
 
 
-# late import to avoid circular at module level
-import cv2
+_migrate_legacy()
 
 
-if __name__ == "__main__":
-    entries = get_all_entries()
-    print(f"{len(entries)} artwork(s) registered.")
-    for e in entries:
-        print(f"  [{e['id']}] '{e['title']}' by {e['author']} | "
-              f"pHash: {e['phash']} | keypoints: {e['kp_count']} | {e['timestamp']}")
-"""
-#part2
+# ── write API ────────────────────────────────────────────────────────────────
 
-"""
-registry.py (v2 — stores IPFS CIDs)
-"""
-import json, os, pickle, cv2
-from datetime import datetime, timezone
+def register_artwork(phash, keypoints, descriptors, title, author, filepath,
+                     image_cid=None, metadata_cid=None, owner_address=None,
+                     local_image=None, status="certified",
+                     tx_hash=None, onchain_id=None) -> dict:
+    """Saves metadata + SIFT data for a new artwork and returns the entry."""
+    with _LOCK:
+        entries = _read_json(REGISTRY_FILE, [])
 
-REGISTRY_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "registry")
-REGISTRY_FILE = os.path.join(REGISTRY_DIR, "registry.json")
-DESC_DIR      = os.path.join(REGISTRY_DIR, "descriptors")
+        # An older unsigned attempt for the very same image is replaced.
+        stale = [e for e in entries
+                 if e.get("status") == "pending" and e.get("phash") == phash]
+        for e in stale:
+            _delete_desc(e["id"])
+        entries = [e for e in entries if e not in stale]
 
-def _load_meta():
-    if not os.path.exists(REGISTRY_FILE): return []
-    with open(REGISTRY_FILE) as f: return json.load(f)
+        entry_id = max((e["id"] for e in entries), default=0) + 1
 
-def _save_meta(entries):
-    os.makedirs(REGISTRY_DIR, exist_ok=True)
-    with open(REGISTRY_FILE, "w") as f: json.dump(entries, f, indent=2)
+        kp_data = [
+            (kp.pt, kp.size, kp.angle, kp.response, kp.octave, kp.class_id)
+            for kp in keypoints
+        ]
+        with open(_desc_path(entry_id), "wb") as f:
+            pickle.dump({"keypoints": kp_data, "descriptors": descriptors}, f)
+
+        entry = {
+            "id":            entry_id,
+            "title":         title,
+            "author":        author,
+            "filepath":      filepath,
+            "local_image":   local_image,
+            "image_cid":     image_cid,
+            "metadata_cid":  metadata_cid,
+            "phash":         phash,
+            "timestamp":     datetime.now(timezone.utc).isoformat(),
+            "kp_count":      len(keypoints),
+            "owner_address": norm_addr(owner_address),
+            "tx_hash":       tx_hash,
+            "onchain_id":    onchain_id,
+            "status":        status,
+        }
+        entries.append(entry)
+        _write_json(REGISTRY_FILE, entries)
+        return entry
 
 
+def update_entry(entry_id: int, **fields) -> dict:
+    with _LOCK:
+        entries = _read_json(REGISTRY_FILE, [])
+        for e in entries:
+            if e["id"] == entry_id:
+                if "owner_address" in fields:
+                    fields["owner_address"] = norm_addr(fields["owner_address"])
+                e.update(fields)
+                _write_json(REGISTRY_FILE, entries)
+                return e
+    raise ValueError(f"No entry with id {entry_id}")
 
-def register_artwork(phash, keypoints, descriptors, title, author,
-                     filepath, image_cid=None, metadata_cid=None, owner_address=None):
-    
-    os.makedirs(DESC_DIR, exist_ok=True)
-    entries  = _load_meta()
-    entry_id = len(entries) + 1
 
-    desc_path = os.path.join(DESC_DIR, f"{entry_id}.pkl")
-    kp_data = [
-        (kp.pt, kp.size, kp.angle, kp.response, kp.octave, kp.class_id)
-        for kp in keypoints
-    ]
-    with open(desc_path, "wb") as f:
-        pickle.dump({"keypoints": kp_data, "descriptors": descriptors}, f)
+def remove_entry(entry_id: int) -> bool:
+    with _LOCK:
+        entries = _read_json(REGISTRY_FILE, [])
+        kept = [e for e in entries if e["id"] != entry_id]
+        if len(kept) == len(entries):
+            return False
+        _write_json(REGISTRY_FILE, kept)
+        _delete_desc(entry_id)
+        return True
 
-    entry = {
-        "id":           entry_id,
-        "title":        title,
-        "author":       author,
-        "filepath":     filepath,
-        "image_cid":    image_cid,
-        "metadata_cid": metadata_cid,
-        "phash":        phash,
-        "timestamp":    datetime.now(timezone.utc).isoformat(),
-        "desc_path":    desc_path,
-        "kp_count":     len(keypoints),
-        "owner_address": owner_address,
-    }
-    entries.append(entry)
-    _save_meta(entries)
-    return entry
 
-def get_all_entries(): return _load_meta()
+def purge_pending(max_age_hours: int = 24) -> int:
+    """Deletes unsigned 'pending' rows older than max_age_hours."""
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+    with _LOCK:
+        entries = _read_json(REGISTRY_FILE, [])
+        keep, dropped = [], 0
+        for e in entries:
+            if e.get("status") == "pending":
+                try:
+                    old = datetime.fromisoformat(e["timestamp"]) < cutoff
+                except Exception:
+                    old = True
+                if old:
+                    _delete_desc(e["id"])
+                    dropped += 1
+                    continue
+            keep.append(e)
+        if dropped:
+            _write_json(REGISTRY_FILE, keep)
+        return dropped
 
-def load_descriptors(entry):
-    with open(entry["desc_path"], "rb") as f:
+
+# ── read API ─────────────────────────────────────────────────────────────────
+
+def get_all_entries(include_pending: bool = False) -> list:
+    entries = _read_json(REGISTRY_FILE, [])
+    if include_pending:
+        return entries
+    return [e for e in entries if e.get("status", "certified") != "pending"]
+
+
+def get_entry(entry_id: int):
+    for e in _read_json(REGISTRY_FILE, []):
+        if e["id"] == entry_id:
+            return e
+    return None
+
+
+def get_entries_by_owner(owner_address: str) -> list:
+    owner = norm_addr(owner_address)
+    if not owner:
+        return []
+    return [e for e in get_all_entries() if norm_addr(e.get("owner_address")) == owner]
+
+
+def load_descriptors(entry: dict):
+    """Returns (cv2 keypoints, descriptors) for a registry entry."""
+    path = _desc_path(entry["id"])
+    if not os.path.exists(path):
+        legacy = entry.get("desc_path")          # path stored by older versions
+        if legacy and os.path.exists(legacy):
+            path = legacy
+        else:
+            raise FileNotFoundError(f"No SIFT data for entry {entry['id']}")
+    with open(path, "rb") as f:
         data = pickle.load(f)
     kps = [
         cv2.KeyPoint(x=p[0][0], y=p[0][1], size=p[1], angle=p[2],
@@ -192,81 +228,37 @@ def load_descriptors(entry):
     ]
     return kps, data["descriptors"]
 
-ATTEMPTS_FILE = os.path.join(REGISTRY_DIR, "attempts.json")
 
+# ── copy-attempt log ─────────────────────────────────────────────────────────
 
-def _load_attempts() -> list:
-    if not os.path.exists(ATTEMPTS_FILE):
-        return []
-    with open(ATTEMPTS_FILE) as f:
-        return json.load(f)
-
-
-def _save_attempts(attempts: list):
-    os.makedirs(REGISTRY_DIR, exist_ok=True)
-    with open(ATTEMPTS_FILE, "w") as f:
-        json.dump(attempts, f, indent=2)
-
-
-def log_attempt(
-    verdict: str,           # "REJECTED" or "FLAGGED_FOR_REVIEW"
-    attempted_title: str,
-    attempted_author: str,
-    matched_artwork_id,
-    matched_owner_address: str,
-    sift_inliers=None,
-):
-    """
-    Records a plagiarism attempt caught by the system. Used to power
-    'X copies of your work have been caught' stats on the Profile page.
-    """
-    attempts = _load_attempts()
-    attempts.append({
-        "verdict":              verdict,
-        "attempted_title":      attempted_title,
-        "attempted_author":     attempted_author,
-        "matched_artwork_id":   matched_artwork_id,
-        "matched_owner_address": matched_owner_address,
-        "sift_inliers":         sift_inliers,
-        "timestamp":            datetime.now(timezone.utc).isoformat(),
-    })
-    _save_attempts(attempts)
+def log_attempt(verdict, attempted_title, attempted_author, matched_artwork_id,
+                matched_owner_address, sift_inliers=None):
+    """Records a caught copy; powers 'copies of your work caught' stats."""
+    with _LOCK:
+        attempts = _read_json(ATTEMPTS_FILE, [])
+        attempts.append({
+            "verdict":               verdict,
+            "attempted_title":       attempted_title,
+            "attempted_author":      attempted_author,
+            "matched_artwork_id":    matched_artwork_id,
+            "matched_owner_address": norm_addr(matched_owner_address),
+            "sift_inliers":          sift_inliers,
+            "timestamp":             datetime.now(timezone.utc).isoformat(),
+        })
+        _write_json(ATTEMPTS_FILE, attempts)
 
 
 def get_attempts_against_owner(owner_address: str) -> list:
-    """Returns all logged copy-attempts made against a specific owner's artworks."""
-    if not owner_address:
+    owner = norm_addr(owner_address)
+    if not owner:
         return []
-    attempts = _load_attempts()
-    return [a for a in attempts if a["matched_owner_address"] == owner_address]
+    return [a for a in _read_json(ATTEMPTS_FILE, [])
+            if norm_addr(a.get("matched_owner_address")) == owner]
 
-
-def get_entries_by_owner(owner_address: str) -> list:
-    """Returns all registry entries owned by a specific wallet address."""
-    if not owner_address:
-        return []
-    entries = _load_meta()
-    return [e for e in entries if e.get("owner_address") == owner_address]
-
-def update_entry(entry_id: int, **fields) -> dict:
-    """
-    Updates specific fields of an existing registry entry.
-    Used after the frontend signs and confirms a blockchain transaction —
-    patches in tx_hash, onchain_id, and the real owner_address (from
-    MetaMask), since the entry was created before the on-chain write
-    happened (see api.py /api/prepare and /api/confirm).
-    """
-    entries = _load_meta()
-    for e in entries:
-        if e["id"] == entry_id:
-            e.update(fields)
-            _save_meta(entries)
-            return e
-    raise ValueError(f"No entry with id {entry_id}")
 
 if __name__ == "__main__":
-    entries = get_all_entries()
-    print(f"{len(entries)} artwork(s) registered.")
+    entries = get_all_entries(include_pending=True)
+    print(f"{len(entries)} entr{'y' if len(entries) == 1 else 'ies'} in {REGISTRY_FILE}")
     for e in entries:
-        cid = e.get("image_cid") or "local only"
-        print(f"  [{e['id']}] '{e['title']}' by {e['author']} | CID: {cid} | {e['timestamp']}")
+        print(f"  [{e['id']}] '{e['title']}' by {e['author']} | pHash {e['phash']} | "
+              f"{e.get('status', 'certified')} | on-chain id: {e.get('onchain_id')}")

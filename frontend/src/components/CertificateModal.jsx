@@ -4,7 +4,7 @@ import { X, ShieldCheck, ExternalLink } from "lucide-react";
 export default function CertificateModal({ entry, onClose }) {
   if (!entry) return null;
 
-  const imageUrl = entry.image_cid ? `https://gateway.pinata.cloud/ipfs/${entry.image_cid}` : null;
+  const imageUrl = entry.image_url || null;
 
   return (
     <AnimatePresence>
@@ -51,18 +51,15 @@ export default function CertificateModal({ entry, onClose }) {
               <Field label="pHash" value={entry.phash} />
               {entry.image_cid && (
                 <Field
-                  label="IPFS CID"
+                  label="Image ID"
                   value={entry.image_cid}
-                  link={`https://gateway.pinata.cloud/ipfs/${entry.image_cid}`}
+                  link={entry.image_url || undefined}
                 />
               )}
-              {entry.tx_hash && (
-                <Field
-                  label="Blockchain Tx"
-                  value={entry.tx_hash}
-                  link={`https://amoy.polygonscan.com/tx/${entry.tx_hash}`}
-                />
+              {entry.onchain_id != null && (
+                <Field label="On-chain ID" value={`#${entry.onchain_id}`} />
               )}
+              {entry.tx_hash && <Field label="Blockchain Tx" value={entry.tx_hash} />}
               <Field
                 label="Registered"
                 value={new Date(entry.timestamp).toLocaleString(undefined, {

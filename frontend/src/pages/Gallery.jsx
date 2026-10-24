@@ -69,9 +69,7 @@ export default function Gallery() {
 }
 
 function ArtworkCard({ entry, index, onClick }) {
-  const imageUrl = entry.image_cid
-    ? `https://gateway.pinata.cloud/ipfs/${entry.image_cid}`
-    : null;
+  const imageUrl = entry.image_url || null;
 
   return (
     <motion.button

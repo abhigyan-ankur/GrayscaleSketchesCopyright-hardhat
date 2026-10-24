@@ -8,11 +8,26 @@ import os
 import bcrypt
 import jwt
 from datetime import datetime, timedelta, timezone
-from dotenv import load_dotenv
+import secrets
 
-load_dotenv()
+from config import SECRET_FILE
 
-JWT_SECRET = os.getenv("JWT_SECRET", "dev-only-insecure-secret-change-me")
+
+def _load_secret() -> str:
+    """JWT_SECRET from .env, else a random secret saved in data/ (stable across restarts)."""
+    env = os.getenv("JWT_SECRET")
+    if env:
+        return env
+    if os.path.exists(SECRET_FILE):
+        with open(SECRET_FILE) as f:
+            return f.read().strip()
+    secret = secrets.token_hex(32)
+    with open(SECRET_FILE, "w") as f:
+        f.write(secret)
+    return secret
+
+
+JWT_SECRET = _load_secret()
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRY_HOURS = 24 * 7  # tokens valid for 7 days
 

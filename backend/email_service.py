@@ -65,9 +65,8 @@ def send_certification_email(to_email: str, title: str, author: str, phash: str,
       <p><b>Title:</b> {title}</p>
       <p><b>Author:</b> {author}</p>
       <p><b>pHash (fingerprint):</b> {phash}</p>
-      <p><b>IPFS:</b> <a href="https://gateway.pinata.cloud/ipfs/{image_cid}">{image_cid}</a></p>
-      <p><b>Blockchain transaction:</b>
-         <a href="https://amoy.polygonscan.com/tx/{tx_hash}">{tx_hash}</a></p>
+      <p><b>Image ID:</b> {image_cid}</p>
+      <p><b>Blockchain transaction (local Hardhat chain):</b> {tx_hash}</p>
       <p>This certificate is permanent and cannot be altered or removed.</p>
     </div>
     """

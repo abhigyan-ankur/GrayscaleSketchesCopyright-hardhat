@@ -117,7 +117,7 @@ export default function Upload() {
         Certify your work
       </motion.h1>
       <p className="mb-10 text-lg text-black/60">
-        Upload a sketch to check for plagiarism and register it on-chain, permanently.
+        Upload a sketch to check it against every registered work and certify it on the local blockchain.
       </p>
 
       {!isLoggedIn && (
@@ -130,14 +130,14 @@ export default function Upload() {
       {isLoggedIn && !isConnected && (
         <div className="mb-6 flex items-center gap-3 rounded-xl border-2 border-black bg-yellow-200 px-5 py-4">
           <AlertTriangle size={20} />
-          <span className="font-medium">Connect your wallet to sign the certification transaction.</span>
+          <span className="font-medium">Pick a wallet in the top bar (Demo Wallet or MetaMask) to sign the certification transaction.</span>
         </div>
       )}
 
       {isLoggedIn && isConnected && !isCorrectNetwork && (
         <div className="mb-6 flex items-center gap-3 rounded-xl border-2 border-black bg-yellow-200 px-5 py-4">
           <AlertTriangle size={20} />
-          <span className="font-medium">Switch to Polygon Amoy Testnet to continue.</span>
+          <span className="font-medium">Switch MetaMask to the Hardhat Local network (button in the top bar) to continue.</span>
         </div>
       )}
 
@@ -267,17 +267,13 @@ function ResultPanel({ result, onReset }) {
           <Row label="pHash" value={result.certificate.phash} />
           {result.certificate.image_cid && (
             <Row
-              label="IPFS"
+              label="Image ID"
               value={result.certificate.image_cid}
-              link={`https://gateway.pinata.cloud/ipfs/${result.certificate.image_cid}`}
+              link={result.certificate.image_url || undefined}
             />
           )}
           {result.certificate.tx_hash && (
-            <Row
-              label="Tx Hash"
-              value={result.certificate.tx_hash}
-              link={`https://amoy.polygonscan.com/tx/${result.certificate.tx_hash}`}
-            />
+            <Row label="Tx Hash" value={result.certificate.tx_hash} />
           )}
           <p className="mt-3 text-xs font-semibold text-black/60">
             A certificate confirmation email has been sent to your account.

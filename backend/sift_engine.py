@@ -106,8 +106,8 @@ def match_against(
 
     # Step 2: Lowe's ratio test — filters ambiguous matches
     good_matches = [
-        m for m, n in raw_matches
-        if m.distance < LOWE_RATIO * n.distance
+        pair[0] for pair in raw_matches
+        if len(pair) == 2 and pair[0].distance < LOWE_RATIO * pair[1].distance
     ]
 
     if len(good_matches) < 4:

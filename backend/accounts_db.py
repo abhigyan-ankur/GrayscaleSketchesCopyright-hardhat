@@ -21,9 +21,18 @@ Schema:
 
 import sqlite3
 import os
+import shutil
 from datetime import datetime, timezone
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "accounts.db")
+from config import ACCOUNTS_DB, BASE_DIR
+
+DB_PATH = ACCOUNTS_DB
+
+# Earlier versions kept accounts.db next to the code. Import it once so
+# existing users keep their accounts.
+_LEGACY_DB = os.path.join(BASE_DIR, "accounts.db")
+if not os.path.exists(DB_PATH) and os.path.exists(_LEGACY_DB):
+    shutil.copy2(_LEGACY_DB, DB_PATH)
 
 VIOLATION_LIMIT = 3
 

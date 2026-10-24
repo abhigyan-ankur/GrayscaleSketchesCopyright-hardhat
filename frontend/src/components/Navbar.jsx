@@ -1,6 +1,6 @@
 import { Link, useLocation } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Wallet, Palette, LogIn, LogOut, User } from "lucide-react";
+import { Wallet, Palette, LogIn, LogOut, User, X } from "lucide-react";
 import { useWallet } from "../context/WalletContext";
 import { useAuth } from "../context/AuthContext";
 
@@ -17,8 +17,10 @@ const navLinks = [
 ];
 
 export default function Navbar() {
-  const { address, isConnected, isCorrectNetwork, connecting, error, connect, switchToAmoy } =
-    useWallet();
+  const {
+    address, isConnected, isCorrectNetwork, connecting, error, mode, demoIndex, chainInfo,
+    connect, connectDemo, disconnect, switchNetwork,
+  } = useWallet();
   const { user, isLoggedIn, logout } = useAuth();
   const location = useLocation();
 
@@ -87,30 +89,61 @@ export default function Navbar() {
           {/* Wallet */}
           <div className="flex flex-col items-end gap-1">
             {!isConnected ? (
-              <motion.button
-                whileHover={{ scale: 1.03 }}
-                whileTap={{ scale: 0.97 }}
-                onClick={connect}
-                disabled={connecting}
-                className="flex items-center gap-2 rounded-full border-2 border-black bg-white px-4 py-2 text-sm font-semibold transition-colors hover:bg-black hover:text-white disabled:opacity-50"
-              >
-                <Wallet size={14} />
-                {connecting ? "Connecting..." : "Connect Wallet"}
-              </motion.button>
+              <div className="flex items-center gap-2">
+                <motion.button
+                  whileHover={{ scale: 1.03 }}
+                  whileTap={{ scale: 0.97 }}
+                  onClick={() => connectDemo(1)}
+                  disabled={connecting}
+                  className="flex items-center gap-2 rounded-full border-2 border-black bg-white px-4 py-2 text-sm font-semibold transition-colors hover:bg-black hover:text-white disabled:opacity-50"
+                >
+                  <Wallet size={14} />
+                  {connecting ? "Connecting..." : "Demo Wallet"}
+                </motion.button>
+                <button
+                  onClick={connect}
+                  disabled={connecting}
+                  className="rounded-full border-2 border-black/30 px-3 py-2 text-sm font-semibold text-black/60 transition-colors hover:border-black hover:text-black disabled:opacity-50"
+                >
+                  MetaMask
+                </button>
+              </div>
             ) : !isCorrectNetwork ? (
               <button
-                onClick={switchToAmoy}
+                onClick={switchNetwork}
                 className="flex items-center gap-2 rounded-full border-2 border-black bg-yellow-300 px-4 py-2 text-sm font-semibold text-black transition-colors hover:bg-yellow-400"
               >
-                Switch to Polygon Amoy
+                Switch to {chainInfo?.chain_name || "Hardhat Local"}
               </button>
             ) : (
               <div className="flex items-center gap-2 rounded-full border-2 border-black bg-green-300 px-4 py-2 text-sm font-semibold text-black">
                 <span className="h-2 w-2 rounded-full bg-green-700" />
-                {shortenAddress(address)}
+                {mode === "demo" && chainInfo ? (
+                  <select
+                    value={demoIndex ?? 1}
+                    onChange={(e) => connectDemo(Number(e.target.value))}
+                    aria-label="Demo wallet account"
+                    className="bg-transparent font-semibold outline-none"
+                  >
+                    {chainInfo.accounts.slice(1).map((acc, i) => (
+                      <option key={acc} value={i + 1}>
+                        Account {i + 1}: {shortenAddress(acc)}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  shortenAddress(address)
+                )}
+                <button
+                  onClick={disconnect}
+                  aria-label="Disconnect wallet"
+                  className="rounded-full p-0.5 hover:bg-black hover:text-white"
+                >
+                  <X size={12} />
+                </button>
               </div>
             )}
-            {error && <span className="text-xs font-medium text-red-600">{error}</span>}
+            {error && <span className="max-w-xs text-right text-xs font-medium text-red-600">{error}</span>}
           </div>
         </div>
       </div>

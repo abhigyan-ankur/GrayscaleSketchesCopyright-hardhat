@@ -10,7 +10,7 @@ import CertificateModal from "../components/CertificateModal";
 
 export default function Dashboard() {
   const { user, isLoggedIn, loading: authLoading, authFetch, linkWallet } = useAuth();
-  const { address, isConnected, connect } = useWallet();
+  const { address, isConnected, connectDemo } = useWallet();
 
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -120,10 +120,10 @@ export default function Dashboard() {
           </div>
           {!isConnected ? (
             <button
-              onClick={connect}
+              onClick={() => connectDemo(1)}
               className="rounded-full border-2 border-black bg-black px-5 py-2.5 font-semibold text-white"
             >
-              Connect Wallet
+              Use Demo Wallet
             </button>
           ) : (
             <button
@@ -220,7 +220,7 @@ function StatCard({ icon, label, value, tone }) {
 
 function ArtworkCard({ entry }) {
   const [showCert, setShowCert] = useState(false);
-  const imageUrl = entry.image_cid ? `https://gateway.pinata.cloud/ipfs/${entry.image_cid}` : null;
+  const imageUrl = entry.image_url || null;
 
   return (
     <>
