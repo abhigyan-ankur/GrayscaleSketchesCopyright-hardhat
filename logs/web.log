@@ -1,0 +1,10 @@
+
+> frontend@0.0.0 dev
+> vite --port 5173 --strictPort
+
+
+  VITE v8.2.0  ready in 257 ms
+
+  ➜  Local:   http://localhost:5173/
+  ➜  Network: use --host to expose
+  ➜  press h + enter to show help
