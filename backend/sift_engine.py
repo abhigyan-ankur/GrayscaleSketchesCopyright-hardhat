@@ -66,6 +66,18 @@ def extract_descriptors(raw_gray: np.ndarray) -> tuple[list, np.ndarray | None]:
     return keypoints, descriptors
 
 
+def extract_mirrored_descriptors(raw_gray: np.ndarray) -> tuple[list, np.ndarray | None]:
+    """
+    SIFT of the horizontally flipped image.
+
+    SIFT is not mirror-invariant: a flipped copy of a drawing produces different
+    descriptors and would slip through. Matching the flipped version too closes
+    that gap. (A vertical flip equals a horizontal flip plus a 180-degree
+    rotation, and SIFT already handles rotation, so this covers both.)
+    """
+    return extract_descriptors(cv2.flip(raw_gray, 1))
+
+
 def serialize_descriptors(descriptors: np.ndarray) -> bytes:
     """Serialise SIFT descriptor matrix for storage in registry."""
     return pickle.dumps(descriptors)

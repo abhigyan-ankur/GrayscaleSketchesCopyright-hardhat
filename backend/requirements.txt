@@ -1,12 +1,21 @@
-opencv-python-headless>=4.8.0
-imagehash>=4.3.2
-Pillow>=10.0.0
+# ── Detection (pHash + SIFT + RANSAC) ────────────────────────────────────────
+opencv-python-headless>=4.8.0     # SIFT, RANSAC homography, image I/O
+imagehash>=4.3.2                  # perceptual hash (pHash)
 numpy>=1.24.0
+
+# ── Images and certificates ──────────────────────────────────────────────────
+Pillow>=10.1.0                    # preprocessing + PDF/PNG certificate rendering
+
+# ── Blockchain (local Hardhat node) ──────────────────────────────────────────
 web3>=7.0.0
+
+# ── API server ───────────────────────────────────────────────────────────────
 fastapi>=0.110.0
 uvicorn>=0.29.0
-python-multipart>=0.0.9
-python-dotenv>=1.0.0
-requests>=2.31.0
-bcrypt>=4.0.0
-PyJWT>=2.8.0
+python-multipart>=0.0.9           # file uploads
+
+# ── Accounts, config, optional services ──────────────────────────────────────
+bcrypt>=4.0.0                     # password hashing
+PyJWT>=2.8.0                      # login tokens (import name: jwt)
+python-dotenv>=1.0.0              # .env loading
+requests>=2.31.0                  # optional IPFS (Pinata) uploads

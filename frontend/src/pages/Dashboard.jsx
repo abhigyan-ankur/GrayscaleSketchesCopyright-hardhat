@@ -178,6 +178,35 @@ export default function Dashboard() {
             </div>
           )}
 
+          {data.my_reviews?.length > 0 && (
+            <>
+              <h2 className="mb-4 font-serif text-2xl font-black">Submissions Under Review</h2>
+              <div className="mb-10 flex flex-col gap-3">
+                {data.my_reviews.map((r) => (
+                  <div
+                    key={r.id}
+                    className="flex items-center justify-between rounded-xl border-2 border-black bg-white px-5 py-4"
+                  >
+                    <div>
+                      <p className="font-semibold">"{r.title}"</p>
+                      <p className="text-sm text-black/50">
+                        flagged as similar to "{r.matched_title}" —{" "}
+                        {new Date(r.submitted_at).toLocaleDateString()}
+                      </p>
+                    </div>
+                    <span
+                      className={`rounded-full border-2 border-black px-3 py-1 text-xs font-bold ${
+                        r.status === "review" ? "bg-yellow-200" : "bg-red-200"
+                      }`}
+                    >
+                      {r.status === "review" ? "UNDER REVIEW" : "REJECTED"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
           {data.copies_of_my_work.length > 0 && (
             <>
               <h2 className="mb-4 font-serif text-2xl font-black">Copy Attempts Caught</h2>

@@ -153,6 +153,7 @@ function ResultPanel({ result, onReset }) {
         <div className="grid gap-2 font-mono text-sm">
           <Row label="Title" value={result.matched_with.title} />
           <Row label="Author" value={result.matched_with.author} />
+          {result.mirrored && <Row label="Type" value="Mirrored (flipped) copy" />}
           {result.matched_with.registered_on && (
             <Row label="Registered" value={new Date(result.matched_with.registered_on).toLocaleString()} />
           )}

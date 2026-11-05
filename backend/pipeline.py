@@ -10,8 +10,16 @@ Two-stage detection:
   Stage 1B — SIFT + RANSAC: the real arbiter of every accept / reject / review
              verdict (thresholds validated on 6 real plagiarism pairs).
 
-The registry is persistent (see registry.py), so a new session compares every
-new upload against everything certified before.
+Mirrored copies: SIFT and pHash are not mirror-invariant, so every upload is
+also checked in its horizontally flipped form.
+
+Own work: if the match is the uploader's own artwork (same account or same
+wallet) it is reported as ALREADY_OWNED. It is not a violation and is not
+logged as a copy attempt.
+
+Flagged works ("similar", not a clear copy) are not punished automatically:
+they are saved in the review queue (status "review") and an admin approves or
+rejects them (see review.py). A strike is only added when a copy is confirmed.
 
 Two ways to finish a CERTIFIED verdict:
   * server-signed (CLI, /api/register): the backend registers on the local
@@ -20,14 +28,36 @@ Two ways to finish a CERTIFIED verdict:
     signs the transaction and /api/confirm promotes the row to certified.
 """
 
+import numpy as np
+
 from validator   import validate_and_preprocess, ValidationError
 from hasher      import compute_phash, phash_distance, PHASH_EXACT_THRESHOLD
-from sift_engine import extract_descriptors, match_against
-from registry    import register_artwork, get_all_entries, load_descriptors, log_attempt
+from sift_engine import extract_descriptors, extract_mirrored_descriptors, match_against
+from registry    import (register_artwork, get_all_entries, load_descriptors,
+                         log_attempt, norm_addr)
 from storage     import store_artwork, image_url_for
 
 
 SIFT_CANDIDATE_THRESHOLD = 40
+
+
+def _is_own(entry: dict, user_id, wallet) -> bool:
+    """True if this registered work belongs to the uploader."""
+    if user_id is not None and entry.get("user_id") == user_id:
+        return True
+    w = norm_addr(wallet)
+    return bool(w) and norm_addr(entry.get("owner_address")) == w
+
+
+def _log_copy(verdict, title, author, entry, sift_inliers=None):
+    log_attempt(verdict, title, author, entry["id"], entry.get("owner_address"),
+                sift_inliers=sift_inliers, matched_user_id=entry.get("user_id"))
+
+
+def _already_owned(entry, stage, **extra) -> dict:
+    return {"status": "ALREADY_OWNED", "stage": stage,
+            "reason": "You already registered this artwork.",
+            "matched_with": _summary(entry), **extra}
 
 
 def process_upload(
@@ -39,6 +69,7 @@ def process_upload(
     check_only: bool = False,
     pending: bool = False,
     owner_address: str = None,
+    user_id: int = None,
 ) -> dict:
 
     # ── Step 1: Validate ────────────────────────────────────────────────────
@@ -47,8 +78,9 @@ def process_upload(
     except ValidationError as e:
         return {"status": "REJECTED", "reason": str(e), "stage": "validation"}
 
-    # ── Step 2: pHash ───────────────────────────────────────────────────────
+    # ── Step 2: pHash (original + mirrored) ─────────────────────────────────
     new_phash = compute_phash(processed_gray)
+    mirror_phash = compute_phash(np.ascontiguousarray(np.fliplr(processed_gray)))
 
     # ── Step 2.5: On-chain duplicate pre-check (free, no gas) ───────────────
     if use_blockchain:
@@ -58,6 +90,12 @@ def process_upload(
             exists, onchain_id = client.is_phash_registered(new_phash)
             if exists:
                 onchain_entry = client.get_artwork(onchain_id)
+                if owner_address and norm_addr(onchain_entry["owner"]) == norm_addr(owner_address):
+                    return {"status": "ALREADY_OWNED", "stage": "blockchain_phash_check",
+                            "reason": "You already registered this artwork.",
+                            "matched_with": {"id": onchain_id, "title": onchain_entry["title"],
+                                             "author": onchain_entry["author"],
+                                             "owner": onchain_entry["owner"]}}
                 if not check_only:
                     log_attempt("REJECTED", title, author, onchain_id,
                                 onchain_entry["owner"], sift_inliers=None)
@@ -75,12 +113,13 @@ def process_upload(
         except Exception as e:
             print(f"  ⚠ Blockchain pre-check unavailable, continuing with local checks: {e}")
 
-    # ── Step 3: SIFT descriptors ────────────────────────────────────────────
+    # ── Step 3: SIFT descriptors (original + mirrored) ──────────────────────
     new_kp, new_desc = extract_descriptors(raw_gray)
     if new_desc is None:
         return {"status": "REJECTED", "reason": "Image has too few features.", "stage": "features"}
+    mirror_kp, mirror_desc = extract_mirrored_descriptors(raw_gray)
 
-    # ── Step 4: Local registry ──────────────────────────────────────────────
+    # ── Step 4: Local registry (certified works only) ───────────────────────
     all_entries = get_all_entries()
     if not all_entries:
         if check_only:
@@ -88,35 +127,50 @@ def process_upload(
         return _certify(new_phash, new_kp, new_desc, title, author, filepath,
                         use_ipfs, use_blockchain, sift_inliers=None,
                         registry_was_empty=True, owner_address=owner_address,
-                        pending=pending)
+                        pending=pending, user_id=user_id)
 
-    # ── Step 5: Stage 1A — pHash exact filter (local) ───────────────────────
+    # ── Step 5: Stage 1A — pHash exact filter (local, also mirrored) ────────
     for e in all_entries:
         dist = phash_distance(new_phash, e["phash"])
-        if dist <= PHASH_EXACT_THRESHOLD:
+        mdist = phash_distance(mirror_phash, e["phash"])
+        if min(dist, mdist) <= PHASH_EXACT_THRESHOLD:
+            mirrored = dist > PHASH_EXACT_THRESHOLD
+            if _is_own(e, user_id, owner_address):
+                return _already_owned(e, "phash_filter", phash_distance=min(dist, mdist),
+                                      mirrored=mirrored)
             if not check_only:
-                log_attempt("REJECTED", title, author, e["id"],
-                            e.get("owner_address"), sift_inliers=None)
+                _log_copy("REJECTED", title, author, e)
             return {
-                "status": "REJECTED", "reason": "Exact or near-exact duplicate detected.",
-                "stage": "phash_filter", "matched_with": _summary(e), "phash_distance": dist,
+                "status": "REJECTED",
+                "reason": ("Mirrored (flipped) copy detected." if mirrored
+                           else "Exact or near-exact duplicate detected."),
+                "stage": "phash_filter", "matched_with": _summary(e),
+                "phash_distance": min(dist, mdist), "mirrored": mirrored,
             }
 
     # ── Step 6: Stage 1B — SIFT + RANSAC (the actual detector) ──────────────
     candidates = sorted(
-        [(phash_distance(new_phash, e["phash"]), e) for e in all_entries], key=lambda x: x[0]
+        [(min(phash_distance(new_phash, e["phash"]),
+              phash_distance(mirror_phash, e["phash"])), e) for e in all_entries],
+        key=lambda x: x[0],
     )
     top_n = max(5, len([e for d, e in candidates if d <= SIFT_CANDIDATE_THRESHOLD]))
 
-    best_inliers, best_entry, best_result = 0, None, None
+    variants = [(False, new_kp, new_desc)]
+    if mirror_desc is not None:
+        variants.append((True, mirror_kp, mirror_desc))
+
+    best_inliers, best_entry, best_result, best_mirrored = 0, None, None, False
     for _, entry in candidates[:top_n]:
         try:
             stored_kp, stored_desc = load_descriptors(entry)
         except Exception:
             continue
-        result = match_against(new_desc, stored_desc, new_kp, stored_kp)
-        if result["inliers"] > best_inliers:
-            best_inliers, best_entry, best_result = result["inliers"], entry, result
+        for mirrored, kp, desc in variants:
+            result = match_against(desc, stored_desc, kp, stored_kp)
+            if result["inliers"] > best_inliers:
+                best_inliers, best_entry, best_result = result["inliers"], entry, result
+                best_mirrored = mirrored
 
     # ── Step 7: Verdict ─────────────────────────────────────────────────────
     if best_result is None or best_result["verdict"] == "DIFFERENT":
@@ -124,31 +178,66 @@ def process_upload(
             return {"status": "NO_MATCH_FOUND"}
         return _certify(new_phash, new_kp, new_desc, title, author, filepath,
                         use_ipfs, use_blockchain, sift_inliers=best_inliers,
-                        owner_address=owner_address, pending=pending)
+                        owner_address=owner_address, pending=pending, user_id=user_id)
+
+    detail = {
+        "sift_inliers": best_inliers, "inlier_ratio": best_result["inlier_ratio"],
+        "scale_factor": best_result["scale"], "mirrored": best_mirrored,
+    }
+    own = _is_own(best_entry, user_id, owner_address)
 
     if best_result["verdict"] == "REVIEW":
+        if own:
+            # A variation of your own work is fine: certify it as a new work.
+            if check_only:
+                return {"status": "NO_MATCH_FOUND"}
+            return _certify(new_phash, new_kp, new_desc, title, author, filepath,
+                            use_ipfs, use_blockchain, sift_inliers=best_inliers,
+                            owner_address=owner_address, pending=pending, user_id=user_id)
+        out = {"status": "FLAGGED_FOR_REVIEW", "stage": "sift_ransac",
+               "matched_with": _summary(best_entry), **detail}
         if not check_only:
-            log_attempt("FLAGGED_FOR_REVIEW", title, author, best_entry["id"],
-                        best_entry.get("owner_address"), sift_inliers=best_inliers)
-        return {
-            "status": "FLAGGED_FOR_REVIEW", "stage": "sift_ransac",
-            "matched_with": _summary(best_entry), "sift_inliers": best_inliers,
-            "inlier_ratio": best_result["inlier_ratio"], "scale_factor": best_result["scale"],
-        }
+            queued = _queue_for_review(new_phash, new_kp, new_desc, title, author,
+                                       filepath, best_entry, detail, owner_address, user_id)
+            out["review_id"] = queued["id"]
+        return out
 
+    # verdict MATCH
+    if own:
+        return _already_owned(best_entry, "sift_ransac", **detail)
     if not check_only:
-        log_attempt("REJECTED", title, author, best_entry["id"],
-                    best_entry.get("owner_address"), sift_inliers=best_inliers)
+        _log_copy("REJECTED", title, author, best_entry, sift_inliers=best_inliers)
     return {
-        "status": "REJECTED", "reason": "Near-duplicate detected via geometric fingerprinting.",
-        "stage": "sift_ransac", "matched_with": _summary(best_entry), "sift_inliers": best_inliers,
-        "inlier_ratio": best_result["inlier_ratio"], "scale_factor": best_result["scale"],
+        "status": "REJECTED",
+        "reason": ("Mirrored copy detected via geometric fingerprinting." if best_mirrored
+                   else "Near-duplicate detected via geometric fingerprinting."),
+        "stage": "sift_ransac", "matched_with": _summary(best_entry), **detail,
     }
+
+
+def _queue_for_review(phash, kp, desc, title, author, filepath, matched, detail,
+                      owner_address, user_id) -> dict:
+    """Saves a flagged upload (image + SIFT data) with status 'review'. No strike
+    is added now; an admin decides (review.py)."""
+    stored = store_artwork(filepath, title, author, phash, allow_ipfs=False)
+    return register_artwork(
+        phash=phash, keypoints=kp, descriptors=desc, title=title, author=author,
+        filepath=filepath, image_cid=stored["image_cid"],
+        metadata_cid=stored["metadata_cid"], owner_address=owner_address,
+        local_image=stored["local_image"], status="review", user_id=user_id,
+        review={
+            "matched_id": matched["id"], "matched_title": matched["title"],
+            "matched_author": matched["author"],
+            "sift_inliers": detail["sift_inliers"], "inlier_ratio": detail["inlier_ratio"],
+            "scale": detail["scale_factor"], "mirrored": detail["mirrored"],
+            "decision": None,
+        },
+    )
 
 
 def _certify(phash, kp, desc, title, author, filepath,
              use_ipfs, use_blockchain, sift_inliers=None, registry_was_empty=False,
-             owner_address=None, pending=False) -> dict:
+             owner_address=None, pending=False, user_id=None) -> dict:
 
     tx_hash = onchain_id = None
     storage_warning = blockchain_warning = None
@@ -190,7 +279,7 @@ def _certify(phash, kp, desc, title, author, filepath,
         metadata_cid=stored["metadata_cid"], owner_address=owner_address,
         local_image=stored["local_image"],
         status="pending" if pending else "certified",
-        tx_hash=tx_hash, onchain_id=onchain_id,
+        tx_hash=tx_hash, onchain_id=onchain_id, user_id=user_id,
     )
 
     res = {"status": "CERTIFIED", "certificate": entry, "stage": "registration",
@@ -236,12 +325,21 @@ def print_result(result: dict):
         if result.get("blockchain_warning"):
             print(f"     ⚠ Blockchain: {result['blockchain_warning']}")
 
+    elif s == "ALREADY_OWNED":
+        m = result["matched_with"]
+        print(f"  ℹ  ALREADY REGISTERED BY YOU")
+        print(f"     '{m['title']}' (no violation recorded)")
+
     elif s == "FLAGGED_FOR_REVIEW":
         m = result["matched_with"]
         print(f"  ⚠  FLAGGED FOR REVIEW")
-        print(f"     Similar to : '{m['title']}' by {m['author']}")
+        print(f"     Similar to : '{m['title']}' by {m['author']}"
+              f"{'  (mirrored)' if result.get('mirrored') else ''}")
         print(f"     Inliers    : {result['sift_inliers']} "
               f"(ratio:{result['inlier_ratio']:.0%} scale:{result['scale_factor']:.2f}x)")
+        if result.get("review_id"):
+            print(f"     Sent to the review queue as #{result['review_id']}; "
+                  f"an admin will approve or reject it.")
 
     elif s == "REJECTED":
         stage = result.get("stage", "")
@@ -253,13 +351,15 @@ def print_result(result: dict):
             print(f"     Owner addr : {m['owner']}")
         elif stage == "sift_ransac":
             m = result["matched_with"]
-            print(f"  ✗  REJECTED — plagiarism detected")
+            print(f"  ✗  REJECTED — plagiarism detected"
+                  f"{' (mirrored copy)' if result.get('mirrored') else ''}")
             print(f"     Matches   : '{m['title']}' by {m['author']}")
             print(f"     Inliers   : {result['sift_inliers']} "
                   f"(ratio:{result['inlier_ratio']:.0%} scale:{result['scale_factor']:.2f}x)")
         elif stage == "phash_filter":
             m = result["matched_with"]
-            print(f"  ✗  REJECTED — exact duplicate (pHash dist:{result['phash_distance']})")
+            print(f"  ✗  REJECTED — {'mirrored copy' if result.get('mirrored') else 'exact duplicate'}"
+                  f" (pHash dist:{result['phash_distance']})")
             print(f"     Matches   : '{m['title']}' by {m['author']}")
         else:
             print(f"  ✗  REJECTED — {result['reason']}")

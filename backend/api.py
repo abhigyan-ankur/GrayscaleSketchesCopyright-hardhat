@@ -19,17 +19,20 @@ import tempfile
 from contextlib import asynccontextmanager
 
 import jwt as pyjwt
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends, Header
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends, Header, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from web3 import Web3
 
-from config import IMAGES_DIR
+from config import IMAGES_DIR, ADMIN_EMAILS
 from pipeline import process_upload
 from registry import (get_all_entries, get_entry, update_entry, purge_pending,
-                      get_entries_by_owner, get_attempts_against_owner, norm_addr)
+                      get_entries_for_user, get_attempts_against, get_user_reviews,
+                      norm_addr)
 from storage import image_url_for
+from certificate import build_certificate
+import review as reviews
 from blockchain_client import BlockchainClient, BlockchainError
 from accounts_db import (create_user, get_user_by_email, get_user_by_id,
                          link_wallet, increment_violation)
@@ -110,8 +113,10 @@ def _serialize_result(result: dict) -> dict:
         out["sift_inliers"] = result.get("sift_inliers")
         out["inlier_ratio"] = result.get("inlier_ratio")
         out["scale_factor"] = result.get("scale_factor")
+        out["mirrored"] = result.get("mirrored", False)
+        out["review_id"] = result.get("review_id")
 
-    elif result["status"] == "REJECTED":
+    elif result["status"] in ("REJECTED", "ALREADY_OWNED"):
         out["reason"] = result.get("reason")
         out["stage"] = result.get("stage")
         out["matched_with"] = result.get("matched_with")
@@ -119,8 +124,16 @@ def _serialize_result(result: dict) -> dict:
         out["inlier_ratio"] = result.get("inlier_ratio")
         out["scale_factor"] = result.get("scale_factor")
         out["phash_distance"] = result.get("phash_distance")
+        out["mirrored"] = result.get("mirrored", False)
 
     return out
+
+
+def _is_admin(user: dict) -> bool:
+    """ADMIN_EMAILS if set; otherwise the very first account is the admin."""
+    if ADMIN_EMAILS:
+        return user["email"].lower() in ADMIN_EMAILS
+    return user["id"] == 1
 
 
 # ── health + chain ───────────────────────────────────────────────────────────
@@ -257,6 +270,7 @@ def login(payload: LoginPayload):
             "wallet_address": user["wallet_address"],
             "violation_count": user["violation_count"],
             "is_withheld": bool(user["is_withheld"]),
+            "is_admin": _is_admin(user),
         },
     }
 
@@ -269,6 +283,7 @@ def me(user: dict = Depends(get_current_user)):
         "wallet_address": user["wallet_address"],
         "violation_count": user["violation_count"],
         "is_withheld": bool(user["is_withheld"]),
+        "is_admin": _is_admin(user),
     }
 
 
@@ -283,8 +298,13 @@ def link_wallet_endpoint(payload: LinkWalletPayload, user: dict = Depends(get_cu
 def dashboard(user: dict = Depends(get_current_user)):
     wallet = user.get("wallet_address")
 
-    my_artworks = get_entries_by_owner(wallet) if wallet else []
-    copies_of_my_work = get_attempts_against_owner(wallet) if wallet else []
+    my_artworks = get_entries_for_user(user["id"], wallet)
+    copies_of_my_work = get_attempts_against(user["id"], wallet)
+    my_reviews = [{
+        "id": e["id"], "title": e["title"], "status": e["status"],
+        "image_url": image_url_for(e), "submitted_at": e["timestamp"],
+        "matched_title": (e.get("review") or {}).get("matched_title"),
+    } for e in get_user_reviews(user["id"])]
 
     return {
         "email": user["email"],
@@ -295,6 +315,7 @@ def dashboard(user: dict = Depends(get_current_user)):
         "copies_caught_count": len(copies_of_my_work),
         "my_artworks": [_serialize_entry(e) for e in my_artworks],
         "copies_of_my_work": copies_of_my_work,
+        "my_reviews": my_reviews,
     }
 
 
@@ -324,9 +345,12 @@ async def prepare(
     try:
         result = process_upload(tmp_path, title, author, use_ipfs=True,
                                 use_blockchain=False, pending=True,
-                                owner_address=user.get("wallet_address"))
+                                owner_address=user.get("wallet_address"),
+                                user_id=user["id"])
 
-        if result["status"] in ("REJECTED", "FLAGGED_FOR_REVIEW") and result.get("matched_with"):
+        # Only a clear copy is a violation. Your own work (ALREADY_OWNED) is not,
+        # and "similar" works (FLAGGED_FOR_REVIEW) wait in the review queue.
+        if result["status"] == "REJECTED" and result.get("matched_with"):
             updated_user = increment_violation(user["id"])
 
             from email_service import send_violation_email, send_withheld_email
@@ -408,3 +432,46 @@ def confirm(payload: ConfirmPayload, user: dict = Depends(get_current_user)):
         tx_hash=updated.get("tx_hash") or "",
     )
     return _serialize_entry(updated)
+
+
+# ── downloadable certificate ─────────────────────────────────────────────────
+
+@app.get("/api/certificate/{entry_id}")
+def download_certificate(entry_id: int, fmt: str = Query("pdf", alias="format")):
+    """PDF (default) or PNG certificate for a certified work. Public, like the gallery."""
+    entry = get_entry(entry_id)
+    if not entry or entry.get("status", "certified") != "certified":
+        raise HTTPException(status_code=404, detail="Certificate not found")
+    data, media_type, filename = build_certificate(entry, "png" if fmt.lower() == "png" else "pdf")
+    return Response(content=data, media_type=media_type,
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+# ── review queue (admin) ─────────────────────────────────────────────────────
+
+def require_admin(user: dict = Depends(get_current_user)) -> dict:
+    if not _is_admin(user):
+        raise HTTPException(status_code=403, detail="Admins only.")
+    return user
+
+
+@app.get("/api/admin/reviews")
+def admin_reviews(decision: str = "open", admin: dict = Depends(require_admin)):
+    """decision = open | decided | all"""
+    return reviews.list_reviews(decision if decision in ("open", "decided", "all") else "open")
+
+
+@app.post("/api/admin/reviews/{entry_id}/approve")
+def admin_approve(entry_id: int, admin: dict = Depends(require_admin)):
+    try:
+        return _serialize_entry(reviews.approve_review(entry_id, admin["email"]))
+    except reviews.ReviewError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.message)
+
+
+@app.post("/api/admin/reviews/{entry_id}/reject")
+def admin_reject(entry_id: int, admin: dict = Depends(require_admin)):
+    try:
+        return _serialize_entry(reviews.reject_review(entry_id, admin["email"]))
+    except reviews.ReviewError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.message)

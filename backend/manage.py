@@ -18,7 +18,7 @@ from registry import get_all_entries, remove_entry
 
 
 def cmd_list():
-    entries = get_all_entries(include_pending=True)
+    entries = get_all_entries(include_all=True)
     if not entries:
         print("Registry is empty.")
         return
@@ -32,10 +32,11 @@ def cmd_list():
 
 
 def cmd_info():
-    entries = get_all_entries(include_pending=True)
+    entries = get_all_entries(include_all=True)
     print(f"Data folder : {DATA_DIR}")
     print(f"Artworks    : {len(entries)} "
-          f"({sum(1 for e in entries if e.get('status') == 'pending')} pending)")
+          f"({sum(1 for e in entries if e.get('status') == 'pending')} pending, "
+          f"{sum(1 for e in entries if e.get('status') == 'review')} in review queue)")
     try:
         from blockchain_client import BlockchainClient
         c = BlockchainClient(auto_sync=False)

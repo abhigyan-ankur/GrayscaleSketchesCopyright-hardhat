@@ -1,16 +1,32 @@
-# React + Vite
+# Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+React + Vite + Tailwind website for Artchain (pages: Upload, Gallery, Search, Dashboard, Review, Login).
 
-Currently, two official plugins are available:
+```bash
+npm install
+npm run dev          # http://localhost:5173
+```
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+The backend must be running at `http://localhost:8000` (see `src/chain.js`) and the Hardhat node at
+`127.0.0.1:8545`.
 
-## React Compiler
+## How it talks to the blockchain
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- The chain id, contract address and demo accounts are **not hardcoded**; the site asks
+  `GET /api/chain/info` on the backend.
+- **Demo Wallet** (top bar): signs with a pre-funded Hardhat account through the dev server, which
+  proxies `/rpc` to the node (see `vite.config.js`). No browser extension needed. The dropdown
+  switches accounts so you can act as different users.
+- **MetaMask** also works: connect it, then press the yellow "Switch to Hardhat Local" button.
 
-## Expanding the Oxlint configuration
+## Pages
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
+| Page | Who | Purpose |
+|---|---|---|
+| Upload | logged in | detection, then the wallet signs the registration; certificate download |
+| Gallery | everyone | every certified work and its certificate |
+| Search | everyone | check an image without certifying it |
+| Dashboard | logged in | your works, caught copies, submissions under review |
+| Review | admin | approve or reject works flagged as similar |
+
+Dependencies are in `package.json`; no extra packages are needed beyond `npm install`.

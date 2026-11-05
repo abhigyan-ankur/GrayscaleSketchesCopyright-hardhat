@@ -11,9 +11,13 @@ Per certified artwork it keeps:
 Because all of this lives on disk, a new session (new process, restarted API,
 restarted blockchain) still matches new uploads against every earlier work.
 
-Rows with status "pending" were prepared by /api/prepare but not yet signed on
-chain. They are invisible to matching and the gallery, so a rejected wallet
-popup can never block a re-upload.
+Every row has a status:
+  certified  registered; used for matching, the gallery and the chain
+  pending    prepared by /api/prepare, waiting for the wallet to sign
+  review     flagged as "similar", waiting for an admin decision
+  rejected   an admin confirmed it was a copy
+Only "certified" rows take part in matching, so a rejected wallet popup or an
+open review can never block anyone.
 
 On first run, an older backend/registry/ folder (previous version of this
 project) is copied into data/registry/ automatically.
@@ -99,14 +103,18 @@ _migrate_legacy()
 def register_artwork(phash, keypoints, descriptors, title, author, filepath,
                      image_cid=None, metadata_cid=None, owner_address=None,
                      local_image=None, status="certified",
-                     tx_hash=None, onchain_id=None) -> dict:
+                     tx_hash=None, onchain_id=None,
+                     user_id=None, review=None) -> dict:
     """Saves metadata + SIFT data for a new artwork and returns the entry."""
     with _LOCK:
         entries = _read_json(REGISTRY_FILE, [])
 
-        # An older unsigned attempt for the very same image is replaced.
+        # An older unsigned / unreviewed attempt for the very same image (by the
+        # same user) is replaced instead of piling up.
         stale = [e for e in entries
-                 if e.get("status") == "pending" and e.get("phash") == phash]
+                 if e.get("phash") == phash and (
+                     e.get("status") == "pending" or
+                     (e.get("status") == "review" and e.get("user_id") == user_id))]
         for e in stale:
             _delete_desc(e["id"])
         entries = [e for e in entries if e not in stale]
@@ -135,7 +143,10 @@ def register_artwork(phash, keypoints, descriptors, title, author, filepath,
             "tx_hash":       tx_hash,
             "onchain_id":    onchain_id,
             "status":        status,
+            "user_id":       user_id,
         }
+        if review is not None:
+            entry["review"] = review
         entries.append(entry)
         _write_json(REGISTRY_FILE, entries)
         return entry
@@ -189,11 +200,33 @@ def purge_pending(max_age_hours: int = 24) -> int:
 
 # ── read API ─────────────────────────────────────────────────────────────────
 
-def get_all_entries(include_pending: bool = False) -> list:
+def get_all_entries(include_all: bool = False) -> list:
+    """Certified artworks (what matching, the gallery and the chain use).
+    include_all=True returns every row whatever its status."""
     entries = _read_json(REGISTRY_FILE, [])
-    if include_pending:
+    if include_all:
         return entries
-    return [e for e in entries if e.get("status", "certified") != "pending"]
+    return [e for e in entries if e.get("status", "certified") == "certified"]
+
+
+def get_review_items() -> list:
+    """Every row that went through the review queue (open or decided)."""
+    return [e for e in _read_json(REGISTRY_FILE, []) if e.get("review")]
+
+
+def get_entries_for_user(user_id, wallet=None) -> list:
+    """Certified works that belong to an account: submitted by it, or owned by
+    its wallet."""
+    owner = norm_addr(wallet)
+    return [e for e in get_all_entries()
+            if (user_id is not None and e.get("user_id") == user_id)
+            or (owner and norm_addr(e.get("owner_address")) == owner)]
+
+
+def get_user_reviews(user_id) -> list:
+    """A user's own submissions that are waiting for review or were rejected."""
+    return [e for e in _read_json(REGISTRY_FILE, [])
+            if e.get("user_id") == user_id and e.get("status") in ("review", "rejected")]
 
 
 def get_entry(entry_id: int):
@@ -232,7 +265,7 @@ def load_descriptors(entry: dict):
 # ── copy-attempt log ─────────────────────────────────────────────────────────
 
 def log_attempt(verdict, attempted_title, attempted_author, matched_artwork_id,
-                matched_owner_address, sift_inliers=None):
+                matched_owner_address, sift_inliers=None, matched_user_id=None):
     """Records a caught copy; powers 'copies of your work caught' stats."""
     with _LOCK:
         attempts = _read_json(ATTEMPTS_FILE, [])
@@ -242,6 +275,7 @@ def log_attempt(verdict, attempted_title, attempted_author, matched_artwork_id,
             "attempted_author":      attempted_author,
             "matched_artwork_id":    matched_artwork_id,
             "matched_owner_address": norm_addr(matched_owner_address),
+            "matched_user_id":       matched_user_id,
             "sift_inliers":          sift_inliers,
             "timestamp":             datetime.now(timezone.utc).isoformat(),
         })
@@ -256,8 +290,16 @@ def get_attempts_against_owner(owner_address: str) -> list:
             if norm_addr(a.get("matched_owner_address")) == owner]
 
 
+def get_attempts_against(user_id, wallet=None) -> list:
+    """Caught copies of a user's works (matched by account or by wallet)."""
+    owner = norm_addr(wallet)
+    return [a for a in _read_json(ATTEMPTS_FILE, [])
+            if (user_id is not None and a.get("matched_user_id") == user_id)
+            or (owner and norm_addr(a.get("matched_owner_address")) == owner)]
+
+
 if __name__ == "__main__":
-    entries = get_all_entries(include_pending=True)
+    entries = get_all_entries(include_all=True)
     print(f"{len(entries)} entr{'y' if len(entries) == 1 else 'ies'} in {REGISTRY_FILE}")
     for e in entries:
         print(f"  [{e['id']}] '{e['title']}' by {e['author']} | pHash {e['phash']} | "

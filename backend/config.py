@@ -41,3 +41,7 @@ PUBLIC_API_URL = (os.getenv("PUBLIC_API_URL") or "http://localhost:8000").rstrip
 # "auto": also pin to IPFS through Pinata when PINATA_JWT is set; falls back to
 #         local storage if Pinata fails.
 STORAGE_MODE = (os.getenv("STORAGE_MODE") or "local").strip().lower()
+
+# Reviewers. Comma-separated emails in ADMIN_EMAILS. If it is not set, the very
+# first account created is the admin (handy for a local demo).
+ADMIN_EMAILS = {e.strip().lower() for e in (os.getenv("ADMIN_EMAILS") or "").split(",") if e.strip()}

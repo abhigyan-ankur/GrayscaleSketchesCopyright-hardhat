@@ -23,6 +23,7 @@ export default function Navbar() {
   } = useWallet();
   const { user, isLoggedIn, logout } = useAuth();
   const location = useLocation();
+  const links = user?.is_admin ? [...navLinks, { label: "Review", path: "/review" }] : navLinks;
 
   return (
     <nav className="sticky top-0 z-50 border-b-4 border-black bg-[#f4f1ea]">
@@ -42,7 +43,7 @@ export default function Navbar() {
 
         {/* Nav links */}
         <div className="hidden gap-1 md:flex">
-          {navLinks.map((link) => {
+          {links.map((link) => {
             const active = location.pathname === link.path;
             return (
               <Link

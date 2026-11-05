@@ -6,6 +6,7 @@ import Search from "./pages/Search";
 import Login from "./pages/Login";
 
 import Dashboard from "./pages/Dashboard";
+import Review from "./pages/Review";
 
 function Placeholder({ title }) {
   return (
@@ -26,6 +27,7 @@ export default function App() {
           <Route path="/search" element={<Search />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/login" element={<Login />} />
+          <Route path="/review" element={<Review />} />
         </Routes>
       </main>
     </div>

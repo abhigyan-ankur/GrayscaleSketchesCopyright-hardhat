@@ -1,5 +1,6 @@
 import { motion, AnimatePresence } from "framer-motion";
-import { X, ShieldCheck, ExternalLink } from "lucide-react";
+import { X, ShieldCheck, ExternalLink, Download } from "lucide-react";
+import { API_BASE } from "../chain";
 
 export default function CertificateModal({ entry, onClose }) {
   if (!entry) return null;
@@ -67,6 +68,21 @@ export default function CertificateModal({ entry, onClose }) {
                   timeStyle: "short",
                 })}
               />
+            </div>
+
+            <div className="mt-6 flex flex-wrap gap-3">
+              <a
+                href={`${API_BASE}/api/certificate/${entry.id}?format=pdf`}
+                className="inline-flex items-center gap-2 rounded-full border-2 border-black bg-black px-5 py-2.5 text-sm font-bold text-white transition-colors hover:bg-white hover:text-black"
+              >
+                <Download size={15} /> Download certificate (PDF)
+              </a>
+              <a
+                href={`${API_BASE}/api/certificate/${entry.id}?format=png`}
+                className="inline-flex items-center gap-2 rounded-full border-2 border-black bg-white px-5 py-2.5 text-sm font-bold transition-colors hover:bg-black hover:text-white"
+              >
+                <Download size={15} /> PNG
+              </a>
             </div>
           </div>
         </motion.div>

@@ -1,9 +1,10 @@
 import { useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Upload as UploadIcon, CheckCircle2, XCircle, AlertTriangle, Loader2 } from "lucide-react";
+import { Upload as UploadIcon, CheckCircle2, XCircle, AlertTriangle, Loader2, Download } from "lucide-react";
 import { useWallet } from "../context/WalletContext";
 import { useAuth } from "../context/AuthContext";
 import { registerOnChain } from "../contract";
+import { API_BASE } from "../chain";
 
 export default function Upload() {
   const { address, signer, isConnected, isCorrectNetwork } = useWallet();
@@ -238,6 +239,7 @@ function ResultPanel({ result, onReset }) {
   const isReview = result.status === "FLAGGED_FOR_REVIEW";
   const isError = result.status === "ERROR";
   const isRejected = result.status === "REJECTED";
+  const isOwned = result.status === "ALREADY_OWNED";
 
   return (
     <motion.div
@@ -245,15 +247,16 @@ function ResultPanel({ result, onReset }) {
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0 }}
       className={`mt-10 rounded-2xl border-4 border-black p-8 shadow-[6px_6px_0_0_#000] ${
-        isCertified ? "bg-green-200" : isReview ? "bg-yellow-200" : "bg-red-200"
+        isCertified ? "bg-green-200" : isOwned ? "bg-blue-100" : isReview ? "bg-yellow-200" : "bg-red-200"
       }`}
     >
       <div className="mb-4 flex items-center gap-3">
-        {isCertified && <CheckCircle2 size={32} />}
+        {(isCertified || isOwned) && <CheckCircle2 size={32} />}
         {isReview && <AlertTriangle size={32} />}
         {(isRejected || isError) && <XCircle size={32} />}
         <h2 className="font-serif text-3xl font-black">
           {isCertified && "Certified on-chain"}
+          {isOwned && "Already registered by you"}
           {isReview && "Flagged for review"}
           {isRejected && "Registration rejected"}
           {isError && "Something went wrong"}
@@ -275,6 +278,20 @@ function ResultPanel({ result, onReset }) {
           {result.certificate.tx_hash && (
             <Row label="Tx Hash" value={result.certificate.tx_hash} />
           )}
+          <div className="mt-4 flex flex-wrap gap-3 font-sans">
+            <a
+              href={`${API_BASE}/api/certificate/${result.certificate.id}?format=pdf`}
+              className="inline-flex items-center gap-2 rounded-full border-2 border-black bg-black px-4 py-2 text-sm font-bold text-white transition-colors hover:bg-white hover:text-black"
+            >
+              <Download size={14} /> Download certificate (PDF)
+            </a>
+            <a
+              href={`${API_BASE}/api/certificate/${result.certificate.id}?format=png`}
+              className="inline-flex items-center gap-2 rounded-full border-2 border-black bg-white px-4 py-2 text-sm font-bold transition-colors hover:bg-black hover:text-white"
+            >
+              <Download size={14} /> PNG
+            </a>
+          </div>
           <p className="mt-3 text-xs font-semibold text-black/60">
             A certificate confirmation email has been sent to your account.
           </p>
@@ -287,8 +304,21 @@ function ResultPanel({ result, onReset }) {
           {result.sift_inliers != null && (
             <Row label="SIFT inliers" value={`${result.sift_inliers} (${((result.inlier_ratio || 0) * 100).toFixed(0)}% match)`} />
           )}
+          {result.mirrored && <Row label="Type" value="Mirrored (flipped) copy" />}
           <p className="mt-3 text-xs font-semibold text-black/60">
-            A warning email has been sent to your account.
+            {isReview
+              ? "Sent to the review queue. An admin will approve or reject it. No violation is recorded unless it is confirmed as a copy."
+              : "A warning email has been sent to your account."}
+          </p>
+        </div>
+      )}
+
+      {isOwned && result.matched_with && (
+        <div className="grid gap-2 font-mono text-sm">
+          <Row label="Your work" value={`"${result.matched_with.title}"`} />
+          <p className="mt-3 text-xs font-semibold text-black/60">
+            This image matches an artwork you already registered. Nothing was changed and no
+            violation was recorded.
           </p>
         </div>
       )}
